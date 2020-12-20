@@ -2,8 +2,8 @@ require recipes-core/android-system-image/android-system-image.inc
 
 COMPATIBLE_MACHINE = "^rosy$"
 
-PV = "20200812-43"
+PV = "20201220-1"
 
-SRC_URI = "http://build.webos-ports.org/halium-luneos-7.1/halium-luneos-7.1-${PV}-${MACHINE}.tar.bz2"
-SRC_URI[md5sum] = "52ac208b4ae764dd2871a4db7c312cd1"
-SRC_URI[sha256sum] = "b67ba12449574373f40fcbed75e06df7abdc8764ae9f8301473cdaaf5c1a55ce"
+SRC_URI = "http://build.webos-ports.org/halium-luneos-9.0/halium-luneos-9.0-${PV}-${MACHINE}.tar.bz2"
+SRC_URI[md5sum] = "37fa4b08c588dcfcf93686dc04035edf"
+SRC_URI[sha256sum] = "3033054b77855664d10795d836a9759c0ba6d1aca763b3f375ef3a84f21d591a"
