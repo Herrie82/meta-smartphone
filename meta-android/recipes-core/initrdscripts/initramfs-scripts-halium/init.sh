@@ -10,6 +10,65 @@
 . /functions
 . /halium-boot.sh
 
+USB_FUNCTIONS=rndis
+ANDROID_USB=/sys/class/android_usb/android0
+GADGET_DIR=/config/usb_gadget
+
+write() {
+	echo -n "$2" >"$1"
+}
+
+# This sets up the USB with whatever USB_FUNCTIONS are set to via configfs
+
+usb_setup_configfs() {
+    G_USB_ISERIAL=$GADGET_DIR/g1/strings/0x409/serialnumber
+
+    mkdir $GADGET_DIR/g1
+    write $GADGET_DIR/g1/idVendor                   "0x18D1"
+    write $GADGET_DIR/g1/idProduct                  "0xD001"
+    mkdir $GADGET_DIR/g1/strings/0x409
+    write $GADGET_DIR/g1/strings/0x409/serialnumber "$1"
+    write $GADGET_DIR/g1/strings/0x409/manufacturer "Halium initrd"
+    write $GADGET_DIR/g1/strings/0x409/product      "Failed to boot"
+
+    if echo $USB_FUNCTIONS | grep -q "rndis"; then
+        mkdir $GADGET_DIR/g1/functions/rndis.usb0
+        mkdir $GADGET_DIR/g1/functions/rndis_bam.rndis
+    fi
+    echo $USB_FUNCTIONS | grep -q "mass_storage" && mkdir $GADGET_DIR/g1/functions/storage.0
+
+    mkdir $GADGET_DIR/g1/configs/c.1
+    mkdir $GADGET_DIR/g1/configs/c.1/strings/0x409
+    write $GADGET_DIR/g1/configs/c.1/strings/0x409/configuration "$USB_FUNCTIONS"
+
+    if echo $USB_FUNCTIONS | grep -q "rndis"; then
+        ln -s $GADGET_DIR/g1/functions/rndis.usb0 $GADGET_DIR/g1/configs/c.1
+        ln -s $GADGET_DIR/g1/functions/rndis_bam.rndis $GADGET_DIR/g1/configs/c.1
+    fi
+    echo $USB_FUNCTIONS | grep -q "mass_storage" && ln -s $GADGET_DIR/g1/functions/storage.0 $GADGET_DIR/g1/configs/c.1
+
+    echo "$(ls /sys/class/udc)" > $GADGET_DIR/g1/UDC
+}
+
+# This sets up the USB with whatever USB_FUNCTIONS are set to via android_usb
+usb_setup_android_usb() {
+    G_USB_ISERIAL=$ANDROID_USB/iSerial
+    write $ANDROID_USB/enable          0
+    write $ANDROID_USB/functions       ""
+    write $ANDROID_USB/enable          1
+    usleep 500000 # 0.5 delay to attempt to remove rndis function
+    write $ANDROID_USB/enable          0
+    write $ANDROID_USB/idVendor        18D1
+    write $ANDROID_USB/idProduct       D001
+    write $ANDROID_USB/iManufacturer   "Halium initrd"
+    write $ANDROID_USB/iProduct        "Failed to boot"
+    write $ANDROID_USB/iSerial         "$1"
+    write $ANDROID_USB/functions       $USB_FUNCTIONS
+    write $ANDROID_USB/enable          1
+}
+
+# This determines which USB setup method is going to be used
+
 setup_devtmpfs() {
     mount -t devtmpfs -o mode=0755,nr_inodes=0 devtmpfs $1/dev
     # Create additional nodes which devtmpfs does not provide
@@ -29,21 +88,17 @@ panic() {
     #sleep 15s
     #reboot
 
-    #system partition is needed for accessing build.prop by android-gadget-setup
-    if [ -e /dev/$system_partition ]; then
-        /sbin/fsck.ext4 -p /dev/$system_partition
-        mkdir -p /system
-        mount -t auto -o rw,noatime,nodiratime,nodelalloc /dev/$system_partition /system
-    fi
-
     #below are now needed in order to use FunctionFS for ADB, tested to work with 3.4+ kernels
-    mkdir -p /dev/usb-ffs/adb 
-    mount -t functionfs adb /dev/usb-ffs/adb > /dev/kmsg
-    #android-gadget-setup doesn't provide below 2 and without them it won't work, so we provide them here.
-    echo adb > /sys/class/android_usb/android0/f_ffs/aliases
-    echo ffs > /sys/class/android_usb/android0/functions 
 
-    /usr/bin/android-gadget-setup adb
+    mkdir /config || true
+    mount -t configfs none /config || true
+
+    if [ -d $ANDROID_USB ]; then
+        usb_setup_android_usb "Halium/LuneOS-initrd-functionfs"
+    elif [ -d $GADGET_DIR ]; then
+        usb_setup_configfs "Halium/LuneOS-initrd-configfs"
+    fi
+    
     /usr/bin/adbd
 }
 
@@ -67,16 +122,27 @@ process_bind_mounts() {
     # system so bind mount them from the outside into the rootfs. If we're
     # doing this the first time we have to remove the old data and copy the
     # initial data
+    
+    # NOTE: for /var it's a bit more complex, as halium can
+    # mount or extract some pieces to /var/lib/lxc/android/rootfs.
+    # So have to exclude that folder from the duplication.
     datadir=${rootmnt}/userdata/$distro_name-data
     tell_kmsg "Preparing $datadir"
+
     if [ ! -e $datadir/.firstboot_done ] ; then
+        tell_kmsg "First boot detected: binding /var and /home to a read-write copy"
+        
+        echo "var/lib/lxc/android" > /to_exclude.txt
         for dir in var home ; do
             rm -rf $datadir/$dir
             mkdir -p $datadir/$dir
 
             # Copy initial content to new location outside rootfs
-            cp -ra ${rootmnt}/$dir/* $datadir/$dir
+            # Use 'tar' to be able to exclude /var/lib/lxc/android 
+            tar -C ${rootmnt} -c -X /to_exclude.txt $dir | tar -x -C $datadir/
+            # cp -ra ${rootmnt}/$dir/* $datadir/$dir
         done
+        rm /to_exclude.txt
 
         mkdir -p $datadir/userdata
         # Copy initial media to userdata
@@ -90,6 +156,17 @@ process_bind_mounts() {
 
         # We're done with our first boot actions
         touch $datadir/.firstboot_done
+    fi
+
+    # before bind-mounting, keep a mount point to the original lxc-android copy
+    mkdir -p $datadir/luneos-lxc-android
+    mount -o bind ${rootmnt}/var/lib/lxc/android $datadir/luneos-lxc-android
+    # this is also needed, in the scenario of a system-as-root mount
+    mount --move ${rootmnt}/var/lib/lxc/android/rootfs $datadir/luneos-lxc-android/rootfs || true
+    # point lxc android container to the read-only folder containing the configuration and the rootfs
+    if [ ! -e $datadir/var/lib/lxc/android ]; then
+        mkdir -p $datadir/var/lib/lxc
+        ln -sf /userdata/luneos-data/luneos-lxc-android $datadir/var/lib/lxc/android
     fi
 
     tell_kmsg "Bind-mount the directories"
