@@ -50,7 +50,7 @@ do_configure_append() {
 }
 
 
-SRCREV = "917d5d898766594acef1bffc2f661db06032863b"
+SRCREV = "4f211858c80f2f207241c9b5239c3142667b4ff2"
 
 KV = "4.4.249"
 PV = "${KV}+gitr${SRCPV}"
