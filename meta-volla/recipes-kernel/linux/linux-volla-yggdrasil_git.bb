@@ -19,7 +19,7 @@ inherit kernel_android
 SRC_URI = " \
     git://github.com/herrie82/android_kernel_volla_mt6763.git;branch=halium-9.0-LuneOS;      \
     "
-SRCREV = "a3bc162aa456ec4f5d07f275ee97093e9087e602"
+SRCREV = "e9ddb0a9da85d659c246956def5c315c182960f7"
 
 S = "${WORKDIR}/git"
 
