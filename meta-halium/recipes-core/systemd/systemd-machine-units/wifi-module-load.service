@@ -1,0 +1,17 @@
+[Unit]
+Description=Load wifi module
+After=android-system.service
+Conflicts=shutdown.target actdead.target
+
+[Service]
+Type=simple
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe wlan
+ExecStartPost=/bin/sleep 2
+ExecStartPost=/usr/sbin/rfkill unblock wifi
+ExecStop=/sbin/modprobe -r wlan
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=basic.target
