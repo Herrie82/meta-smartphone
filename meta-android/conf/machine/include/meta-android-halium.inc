@@ -12,6 +12,10 @@ PREFERRED_PROVIDER_virtual/libgles3 ?= "libhybris"
 # Use Halium-based init scripts
 VIRTUAL-RUNTIME_android-initramfs-scripts = "initramfs-scripts-halium"
 
+# Use oFono from Mer/SFOS for Halium targets
+VIRTUAL-RUNTIME_ofono = "ofono-halium"
+VIRTUAL-RUNTIME_ofono-tests = "ofono-halium-tests"
+
 PREFERRED_PROVIDER_virtual/android-headers = "android-headers-halium"
 
 MACHINEOVERRIDES =. "halium:"
@@ -22,3 +26,4 @@ SKIP_RECIPE[mx-1.0] ?= "Depends on blacklisted clutter-1.0"
 SKIP_RECIPE[clutter-gtk-1.0] ?= "Depends on blacklisted clutter-1.0"
 SKIP_RECIPE[clutter-gst-3.0] ?= "Depends on blacklisted clutter-1.0"
 SKIP_RECIPE[packagegroup-core-clutter] ?= "Depends on blacklisted clutter-1.0"
+
