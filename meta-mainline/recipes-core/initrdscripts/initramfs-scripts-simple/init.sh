@@ -75,8 +75,13 @@ else
     # mount partition labeled "luneos-rootfs"
     mount_root_partition "luneos-root" "/rfs"
 
-    info "Mounting pseudo-filesystems in rootfs..."
-    mount_proc_sys_dev_configfs "/rfs"
+    info "Moving/mounting pseudo-filesystems to rootfs..."
+    # Mount fresh proc and sys for the new root
+    mkdir -p /rfs/proc /rfs/sys /rfs/config
+    mount -t proc -o nodev,noexec,nosuid proc /rfs/proc
+    mount -t sysfs -o nodev,noexec,nosuid sysfs /rfs/sys
+    # MOVE configfs (don't create new) to preserve USB gadget configuration
+    mount --move /config /rfs/config
 
     #info "Stopping debug services"
     #stop_telnetd
