@@ -13,11 +13,18 @@ if [ ! -b /dev/mmcblk0p13 ]; then
     fi
 fi
 
-# mount boot partition:
+# mount boot partition (may already be mounted rw for debug logging)
 mkdir -p /mnt/boot
-mount -o ro /dev/mmcblk0p13 /mnt/boot
-if [ $? -ne 0 ]; then
-    fail "Failed to mount /dev/mmcblk0p13 on /mnt/boot"
+if mount | grep -q "/mnt/boot"; then
+    info "[initramfs] /mnt/boot already mounted (debug logging), remounting ro..."
+    # Sync any pending writes before remounting read-only
+    sync
+    mount -o remount,ro /mnt/boot
+else
+    mount -o ro /dev/mmcblk0p13 /mnt/boot
+    if [ $? -ne 0 ]; then
+        fail "Failed to mount /dev/mmcblk0p13 on /mnt/boot"
+    fi
 fi
 
 info "[initramfs] mmcblk0p13 mounted."

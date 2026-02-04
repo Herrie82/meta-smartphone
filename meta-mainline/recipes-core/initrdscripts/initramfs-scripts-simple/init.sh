@@ -12,13 +12,58 @@ mkdir -p /dev
 
 # mount basic virtual fs
 mount_proc_sys_dev_configfs ""
+
+# Mount devtmpfs for automatic device node creation by kernel
+echo "Mounting devtmpfs..."
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || echo "devtmpfs mount failed (may already be mounted)"
+
 echo "Populate /dev thanks to mdev"
 start_mdev
+
+# Give kernel time to probe devices (eMMC, USB controller)
+echo "Waiting for device initialization..."
+sleep 2
 # redirect log
 # setup_log
 
 echo "/proc/cmdline:"
 cat /proc/cmdline
+
+### Setup persistent debug log ###
+# Mount boot partition early for persistent logging (before USB setup)
+# This allows debugging USB issues even without serial console
+DEBUGLOG=""
+BOOT_DEV=""
+# Wait for and find boot partition - try common locations
+echo "Looking for boot partition..."
+for i in 1 2 3 4 5; do
+    for dev in /dev/mmcblk0p13 /dev/mmcblk0p1 /dev/sda1; do
+        if [ -b "$dev" ]; then
+            BOOT_DEV="$dev"
+            break 2
+        fi
+    done
+    echo "Waiting for block devices... ($i)"
+    sleep 1
+done
+
+if [ -n "$BOOT_DEV" ]; then
+    echo "Found boot device: $BOOT_DEV"
+    mkdir -p /mnt/boot
+    if mount -o rw "$BOOT_DEV" /mnt/boot 2>/dev/null; then
+        DEBUGLOG=/mnt/boot/initramfs-debug.log
+        echo "=== Initramfs boot log $(date 2>/dev/null || echo 'unknown') ===" > $DEBUGLOG
+        echo "Persistent debug log enabled at $DEBUGLOG"
+    else
+        echo "Failed to mount $BOOT_DEV"
+    fi
+else
+    echo "WARNING: No boot partition found for debug logging"
+    echo "Available block devices:"
+    ls -la /dev/mmcblk* /dev/sd* 2>/dev/null || echo "  (none)"
+fi
+export DEBUGLOG
+###
 
 ### Detect debug mode ###
 DEBUGMODE=no
@@ -124,6 +169,8 @@ else
     fi
 
     info "Switching to root filesystem"
+    # Sync debug log to disk before switch_root
+    [ -n "$DEBUGLOG" ] && sync
     exec switch_root /rfs /sbin/init
 
     # If switch_root fails we end up here
