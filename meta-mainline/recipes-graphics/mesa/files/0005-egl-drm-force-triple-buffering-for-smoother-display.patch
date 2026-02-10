@@ -1,0 +1,81 @@
+From a18fc8a35911000fd6ab7a4a5fce454f2b05034f Mon Sep 17 00:00:00 2001
+From: Herrie <herrie@luneos.org>
+Date: Sun, 8 Feb 2026 12:00:00 +0000
+Subject: [PATCH 5/6] egl/drm: force triple buffering for smoother display
+
+On some hardware (e.g., Adreno 220 on HP TouchPad), double buffering
+causes display underruns when the GPU can't keep up with vsync. The
+display controller starts reading the next scanline before the GPU
+has finished writing it.
+
+Triple buffering solves this by always having a completed buffer
+ready for the display controller:
+- Buffer A: being displayed (front)
+- Buffer B: ready to display (completed)
+- Buffer C: being rendered (back)
+
+This matches the webOS behavior on HP TouchPad which used fb_num=3
+in the panel driver for exactly this reason.
+
+The patch modifies get_back_bo() to skip the most recently swapped
+buffer (age=1) when 3+ buffers are allocated. This ensures the
+display controller can read from it without GPU write contention.
+
+This can be controlled via the MESA_DRM_TRIPLE_BUFFER environment
+variable. Set to 0 to disable and use default behavior.
+
+Upstream-Status: Pending
+Signed-off-by: Herrie <herrie@luneos.org>
+---
+ src/egl/drivers/dri2/platform_drm.c | 28 ++++++++++++++++++++++++++--
+ 1 file changed, 26 insertions(+), 2 deletions(-)
+
+diff --git a/src/egl/drivers/dri2/platform_drm.c b/src/egl/drivers/dri2/platform_drm.c
+index 1a35ae3..f93dfa5 100644
+--- a/src/egl/drivers/dri2/platform_drm.c
++++ b/src/egl/drivers/dri2/platform_drm.c
+@@ -225,6 +225,16 @@ dri2_drm_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
+    return EGL_TRUE;
+ }
+ 
++static int
++get_triple_buffer_enabled(void)
++{
++   const char *env = getenv("MESA_DRM_TRIPLE_BUFFER");
++   /* Default to enabled (1) if not set, disabled if set to "0" */
++   if (env && strcmp(env, "0") == 0)
++      return 0;
++   return 1;
++}
++
+ static int
+ get_back_bo(struct dri2_egl_surface *dri2_surf)
+ {
+@@ -232,11 +242,25 @@ get_back_bo(struct dri2_egl_surface *dri2_surf)
+       dri2_egl_display(dri2_surf->base.Resource.Display);
+    struct gbm_dri_surface *surf = dri2_surf->gbm_surf;
+    int age = 0;
++   int triple_buffer = get_triple_buffer_enabled();
++   int allocated_count = 0;
++
++   /* Count allocated buffers for triple buffering decision */
++   for (unsigned i = 0; i < ARRAY_SIZE(dri2_surf->color_buffers); i++) {
++      if (dri2_surf->color_buffers[i].bo)
++         allocated_count++;
++   }
+ 
+    if (dri2_surf->back == NULL) {
+       for (unsigned i = 0; i < ARRAY_SIZE(dri2_surf->color_buffers); i++) {
+-         if (!dri2_surf->color_buffers[i].locked &&
+-             dri2_surf->color_buffers[i].age >= age) {
++         if (dri2_surf->color_buffers[i].locked)
++            continue;
++         /* For triple buffering, skip most recently swapped buffer (age=1)
++          * to prevent display/GPU contention on the same buffer */
++         if (triple_buffer && allocated_count >= 3 &&
++             dri2_surf->color_buffers[i].age == 1)
++            continue;
++         if (dri2_surf->color_buffers[i].age >= age) {
+             dri2_surf->back = &dri2_surf->color_buffers[i];
+             age = dri2_surf->color_buffers[i].age;
+          }

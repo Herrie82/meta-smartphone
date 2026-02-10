@@ -1,0 +1,54 @@
+From 88a9af65d5bf312fbd66462d1b442119783006a0 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Tue, 10 Feb 2026 09:34:55 +0100
+Subject: [PATCH] freedreno/a2xx: add WFI after gmem2mem for RTT sync
+
+The gmem2mem operation uses RB_COPY which is a DMA operation from
+GMEM to system memory. The Command Processor (CP) can finish
+processing commands before the Render Backend (RB) completes the
+actual DMA transfer.
+
+Without an explicit wait-for-idle after gmem2mem, the batch fence
+can signal before the texture data is fully written to system
+memory. This causes intermittent corruption when the texture is
+sampled in a subsequent render pass (e.g., blur effects,
+render-to-texture).
+
+Add OUT_WFI after gmem2mem operations to ensure the RB_COPY DMA
+is complete before the batch ends. This matches KGSL behavior
+where sys2gmem (the next operation) has PM4_WAIT_FOR_IDLE at
+its start, providing implicit synchronization.
+
+Symptoms fixed:
+- Intermittent partial blur in glmark2 blur benchmark
+- Render-to-texture corruption that "works sometimes"
+- Multi-pass rendering artifacts on A22X (Adreno 220/225)
+
+Upstream-Status: Pending
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+index 952ad7c..2ca0394 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -217,6 +217,14 @@ prepare_tile_fini_ib(struct fd_batch *batch) assert_dt
+    if (batch->resolve & FD_BUFFER_COLOR)
+       emit_gmem2mem_surf(batch, gmem->cbuf_base[0], pfb->cbufs[0]);
+ 
++   /* A22X: wait for RB_COPY DMA to complete before signaling fence.
++    * Without this, the fence can signal before the texture data is
++    * fully written to system memory, causing RTT corruption.
++    */
++   if (!is_a20x(ctx->screen)) {
++      OUT_WFI(ring);
++   }
++
+    OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+    OUT_RING(ring, CP_REG(REG_A2XX_RB_MODECONTROL));
+    OUT_RING(ring, A2XX_RB_MODECONTROL_EDRAM_MODE(COLOR_DEPTH));
+-- 
+2.43.0
+

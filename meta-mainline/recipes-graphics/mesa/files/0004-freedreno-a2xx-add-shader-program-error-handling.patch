@@ -1,0 +1,71 @@
+From c80c6018d3d908e597bbd619e58c4dd1de12fb99 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Sun, 8 Feb 2026 21:06:41 +0100
+Subject: [PATCH 4/6] freedreno/a2xx: add shader program error handling
+
+Update fd2_program.c to handle shader compilation failures:
+
+- Make emit() return bool and check for empty shaders
+- Check ir2_compile() return value in fd2_fp_state_create()
+- Check ir2_compile() return value in fd2_vp_state_create()
+
+This ensures that failed shader compilations are properly detected
+and the driver can fall back gracefully instead of trying to use
+invalid shader objects.
+
+Upstream-Status: Pending
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_program.c | 14 ++++++++++----
+ 1 file changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_program.c b/src/gallium/drivers/freedreno/a2xx/fd2_program.c
+index d60ab8c..7a403ef 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_program.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_program.c
+@@ -63,13 +63,16 @@ delete_shader(struct fd2_shader_stateobj *so)
+    free(so);
+ }
+ 
+-static void
++static bool
+ emit(struct fd_ringbuffer *ring, gl_shader_stage type,
+      struct ir2_shader_info *info, struct util_dynarray *patches)
+ {
+    unsigned i;
+ 
+-   assert(info->sizedwords);
++   if (!info->sizedwords) {
++      mesa_loge("fd2: shader has no instructions");
++      return false;
++   }
+ 
+    OUT_PKT3(ring, CP_IM_LOAD_IMMEDIATE, 2 + info->sizedwords);
+    OUT_RING(ring, type == MESA_SHADER_FRAGMENT);
+@@ -81,6 +84,7 @@ emit(struct fd_ringbuffer *ring, gl_shader_stage type,
+ 
+    for (i = 0; i < info->sizedwords; i++)
+       OUT_RING(ring, info->dwords[i]);
++   return true;
+ }
+ 
+ static int
+@@ -109,7 +113,8 @@ fd2_fp_state_create(struct pipe_context *pctx,
+ 
+    so->first_immediate = so->nir->num_uniforms;
+ 
+-   ir2_compile(so, 0, NULL);
++   if (!ir2_compile(so, 0, NULL))
++      goto fail;
+ 
+    ralloc_free(so->nir);
+    so->nir = NULL;
+@@ -148,7 +153,8 @@ fd2_vp_state_create(struct pipe_context *pctx,
+    so->first_immediate = so->nir->num_uniforms;
+ 
+    /* compile binning variant now */
+-   ir2_compile(so, 0, NULL);
++   if (!ir2_compile(so, 0, NULL))
++      goto fail;
+ 
+    return so;
+ 

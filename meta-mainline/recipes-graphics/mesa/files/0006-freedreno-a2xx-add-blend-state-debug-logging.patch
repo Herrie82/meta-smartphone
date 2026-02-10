@@ -1,0 +1,31 @@
+From f2994fc2335a50bb3e8b74a57c4b23656193a85d Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Mon, 9 Feb 2026 08:09:28 +0100
+Subject: [PATCH] freedreno/a2xx: add blend state debug logging
+
+Temporary debug patch to trace blend state creation.
+Logs rgb/alpha src/dst factors and blend function when blending is enabled.
+
+Upstream-Status: Inappropriate [debug]
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_blend.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_blend.c b/src/gallium/drivers/freedreno/a2xx/fd2_blend.c
+index 4d9210d..80bd854 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_blend.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_blend.c
+@@ -111,5 +111,13 @@ fd2_blend_state_create(struct pipe_context *pctx,
+    if (cso->dither)
+       so->rb_colorcontrol |= A2XX_RB_COLORCONTROL_DITHER_MODE(DITHER_ALWAYS);
+ 
++   /* Debug: log blend state creation */
++   if (rt->blend_enable) {
++      mesa_logi("A2XX blend: rgb_src=%d rgb_dst=%d rgb_func=%d alpha_src=%d alpha_dst=%d alpha_func=%d rb_blendcontrol=0x%08x",
++                rt->rgb_src_factor, rt->rgb_dst_factor, rt->rgb_func,
++                rt->alpha_src_factor, rt->alpha_dst_factor, rt->alpha_func,
++                so->rb_blendcontrol);
++   }
++
+    return so;
+ }

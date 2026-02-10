@@ -1,0 +1,29 @@
+From e2f8963ef4a7943ebf8f5c684726dc05e491fc0c Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Sun, 8 Feb 2026 21:04:30 +0100
+Subject: [PATCH 2/6] freedreno/a2xx: increase scheduler instruction limit
+
+Increase instr_sched array from 0x180 (384) to 0x400 (1024) entries
+to handle more complex shaders without hitting the scheduler limit.
+
+This prevents "no instruction available in sched_next" errors when
+compiling shaders with many instructions like terrain/shadow effects.
+
+Upstream-Status: Pending
+---
+ src/gallium/drivers/freedreno/a2xx/ir2_private.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/ir2_private.h b/src/gallium/drivers/freedreno/a2xx/ir2_private.h
+index 177f413..46b26c5 100644
+--- a/src/gallium/drivers/freedreno/a2xx/ir2_private.h
++++ b/src/gallium/drivers/freedreno/a2xx/ir2_private.h
+@@ -181,7 +181,7 @@ struct ir2_context {
+    struct ir2_instr instr[0x300];
+    unsigned instr_count;
+ 
+-   struct ir2_sched_instr instr_sched[0x180];
++   struct ir2_sched_instr instr_sched[0x400];
+    unsigned instr_sched_count;
+ };
+ 

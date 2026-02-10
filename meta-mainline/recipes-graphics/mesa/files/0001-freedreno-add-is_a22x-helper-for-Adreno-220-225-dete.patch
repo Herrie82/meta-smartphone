@@ -1,0 +1,36 @@
+From c87fa574692a015bcdbe68657be18800f4767d15 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Sun, 8 Feb 2026 21:04:11 +0100
+Subject: [PATCH 1/6] freedreno: add is_a22x() helper for Adreno 220/225
+ detection
+
+Add a helper function to detect Adreno 220/225 (Leia) GPUs which have
+different characteristics from Adreno 200/205 (Yamato). The A22x series
+requires specific register initialization that differs from A20x.
+
+This is needed to apply Leia-specific workarounds that match the
+proprietary KGSL driver behavior.
+
+Upstream-Status: Pending
+---
+ src/gallium/drivers/freedreno/freedreno_screen.h | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_screen.h b/src/gallium/drivers/freedreno/freedreno_screen.h
+index b23af9a..20d65fb 100644
+--- a/src/gallium/drivers/freedreno/freedreno_screen.h
++++ b/src/gallium/drivers/freedreno/freedreno_screen.h
+@@ -228,6 +228,13 @@ is_a2xx(struct fd_screen *screen)
+    return screen->gen == 2;
+ }
+ 
++/* a22x (Leia): Adreno 220, 225 - different from a20x (Yamato) */
++static inline bool
++is_a22x(struct fd_screen *screen)
++{
++   return (screen->gpu_id >= 220) && (screen->gpu_id < 230);
++}
++
+ /* is a3xx patch revision 0? */
+ /* TODO a306.0 probably doesn't need this.. be more clever?? */
+ static inline bool
