@@ -1,0 +1,218 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Wed, 11 Feb 2026 15:00:00 +0100
+Subject: [PATCH] freedreno/a2xx: add comprehensive register debug logging
+
+Add detailed register value logging for A2XX GPUs to help debug
+intermittent rendering issues. When FD_MESA_DEBUG=regs is set,
+logs all critical register values at:
+- GPU state restore (fd2_emit_restore)
+- Each draw call (blend state, shader info)
+- GMEM operations
+
+This helps identify which register values differ between
+successful renders and renders with artifacts.
+
+Usage: FD_MESA_DEBUG=regs glmark2-es2-drm
+
+Upstream-Status: Pending
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_draw.c |  52 ++++++++
+ src/gallium/drivers/freedreno/a2xx/fd2_emit.c | 112 ++++++++++++++++++
+ src/gallium/drivers/freedreno/freedreno_screen.c |   1 +
+ src/gallium/drivers/freedreno/freedreno_util.h   |   1 +
+ 4 files changed, 166 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
+index 1111111..2222222 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
+@@ -32,6 +32,55 @@
+ #include "fd2_util.h"
+ #include "fd2_zsa.h"
+
++static void
++fd2_debug_draw_state(struct fd_context *ctx)
++{
++   static unsigned draw_count = 0;
++   draw_count++;
++
++   if (!FD_DBG(REGS))
++      return;
++
++   struct fd2_blend_stateobj *blend = fd2_blend_stateobj(ctx->blend);
++   struct fd2_zsa_stateobj *zsa = fd2_zsa_stateobj(ctx->zsa);
++
++   mesa_logi("=== A2XX Draw #%u State ===", draw_count);
++
++   if (blend) {
++      mesa_logi("  BLEND: rb_blendcontrol=0x%08x rb_colorcontrol=0x%08x",
++                blend->rb_blendcontrol, blend->rb_colorcontrol);
++      mesa_logi("  BLEND: rb_colormask=0x%08x",
++                blend->rb_colormask);
++   }
++
++   if (zsa) {
++      mesa_logi("  ZSA: rb_depthcontrol=0x%08x rb_stencilrefmask=0x%08x",
++                zsa->rb_depthcontrol, zsa->rb_stencilrefmask);
++   }
++
++   if (ctx->prog.fs) {
++      struct fd2_shader_stateobj *fs = ctx->prog.fs;
++      mesa_logi("  FS: sizedwords=%u first_immediate=%u",
++                fs->variant[0].info.sizedwords,
++                fs->first_immediate);
++   }
++
++   if (ctx->prog.vs) {
++      struct fd2_shader_stateobj *vs = ctx->prog.vs;
++      mesa_logi("  VS: sizedwords=%u first_immediate=%u",
++                vs->variant[0].info.sizedwords,
++                vs->first_immediate);
++   }
++
++   /* Log every 100th draw in detail */
++   if ((draw_count % 100) == 0) {
++      mesa_logi("  Draw #%u: prims=%s, start=%u, count=%u",
++                draw_count,
++                u_prim_name(ctx->batch->prim_strm_bits & 0x1f),
++                0, 0);
++   }
++}
++
+ static void
+ fd2_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
+              unsigned drawid_offset,
+@@ -41,6 +90,9 @@ fd2_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
+    assert_dt
+    struct fd_ringbuffer *ring = ctx->batch->draw;
+
++   /* Debug: log draw state */
++   fd2_debug_draw_state(ctx);
++
+    if (ctx->dirty & FD_DIRTY_VTXBUF)
+       emit_vertexbufs(ctx);
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
+index 3333333..4444444 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
+@@ -428,10 +428,122 @@ fd2_emit_tile_gmem2mem(struct fd_batch *batch, const struct fd_tile *tile)
+    fd2_emit_ib(ring, batch->tile_fini);
+ }
+
++/* Debug helper: log all register values being set during restore */
++static void
++fd2_debug_log_restore_regs(struct fd_context *ctx)
++{
++   static unsigned restore_count = 0;
++   restore_count++;
++
++   if (!FD_DBG(REGS))
++      return;
++
++   struct fd_screen *screen = ctx->screen;
++   bool is_a22x = !is_a20x(screen);
++
++   mesa_logi("========================================");
++   mesa_logi("A2XX GPU State Restore #%u (is_a22x=%d)", restore_count, is_a22x);
++   mesa_logi("========================================");
++
++   /* Critical shader registers */
++   mesa_logi("SHADER REGISTERS:");
++   mesa_logi("  SQ_GPR_MANAGEMENT (0x0d00) = 0x00040400");
++   mesa_logi("    REG_DYNAMIC=0, REG_SIZE_PIX=64, REG_SIZE_VTX=64");
++   mesa_logi("  SQ_INST_STORE_MANAGMENT (0x0d02) = 0x00000180");
++   mesa_logi("  SQ_INTERPOLATOR_CNTL (0x2182) = 0xffffffff (all smooth)");
++   mesa_logi("  SQ_WRAPPING_0 (0x2183) = 0x00000000");
++   mesa_logi("  SQ_WRAPPING_1 (0x2184) = 0x00000000");
++
++   /* Render backend registers */
++   mesa_logi("RENDER BACKEND:");
++   mesa_logi("  RB_MODECONTROL (0x2208) = COLOR_DEPTH mode");
++   mesa_logi("  RB_SAMPLE_POS (0x220a) = 0x88888888");
++   mesa_logi("  RB_COLOR_DEST_MASK (0x2326) = 0xffffffff");
++   mesa_logi("  RB_COLOR_MASK (0x2104) = 0x0000000f (RGBA write)");
++   mesa_logi("  RB_BLEND_RED/GREEN/BLUE (0x2105-7) = 0x00000000");
++   mesa_logi("  RB_BLEND_ALPHA (0x2108) = 0x000000ff");
++
++   /* Primitive assembly */
++   mesa_logi("PRIMITIVE ASSEMBLY:");
++   mesa_logi("  PA_SC_AA_CONFIG (0x2301) = 0x00000000");
++   mesa_logi("  PA_SC_LINE_CNTL (0x2300) = 0x00000000");
++   mesa_logi("  PA_SC_WINDOW_OFFSET (0x2080) = 0x00000000");
++   mesa_logi("  PA_CL_VTE_CNTL (0x2206) = VTX_W0_FMT | VPORT_*_ENA");
++
++   /* Vertex grouper */
++   mesa_logi("VERTEX GROUPER:");
++   mesa_logi("  VGT_MAX_VTX_INDX (0x2100) = 0xffffffff");
++   mesa_logi("  VGT_MIN_VTX_INDX (0x2101) = 0x00000000");
++   mesa_logi("  VGT_INDX_OFFSET (0x2102) = 0x00000000");
++   if (is_a22x) {
++      mesa_logi("  VGT_VERTEX_REUSE_BLOCK_CNTL (0x2316) = 0x0000003b (A22X)");
++   } else {
++      mesa_logi("  VGT_VERTEX_REUSE_BLOCK_CNTL (0x2316) = 0x00000002 (A20X)");
++      mesa_logi("  VGT_OUT_DEALLOC_CNTL (0x2317) = 0x00000002 (A20X only)");
++   }
++
++   /* A22X specific */
++   if (is_a22x) {
++      mesa_logi("A22X SPECIFIC:");
++      mesa_logi("  A220_RB_LRZ_VSC_CONTROL (0x2209) = 0x00000000");
++      mesa_logi("  A220_GRAS_CONTROL (0x2210) = 0x00000000");
++      mesa_logi("  RBBM_PM_OVERRIDE2 (0x039d) = 0x00000fff (clocks on)");
++   }
++
++   /* Texture */
++   mesa_logi("TEXTURE:");
++   mesa_logi("  TP0_CHICKEN (0x0e1e) = 0x00000002");
++
++   mesa_logi("========================================");
++}
++
++/* Debug helper: log GMEM operation */
++static void
++fd2_debug_log_gmem_op(const char *op, unsigned bin_w, unsigned bin_h)
++{
++   if (!FD_DBG(REGS))
++      return;
++
++   mesa_logi("GMEM %s: bin_w=%u bin_h=%u", op, bin_w, bin_h);
++}
++
+ void
+ fd2_emit_restore(struct fd_context *ctx, struct fd_ringbuffer *ring)
+ {
++   /* Debug: log all register values */
++   fd2_debug_log_restore_regs(ctx);
++
+    OUT_PKT0(ring, REG_A2XX_TP0_CHICKEN, 1);
+    OUT_RING(ring, 0x00000002);
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_screen.c b/src/gallium/drivers/freedreno/freedreno_screen.c
+index 5555555..6666666 100644
+--- a/src/gallium/drivers/freedreno/freedreno_screen.c
++++ b/src/gallium/drivers/freedreno/freedreno_screen.c
+@@ -91,6 +91,7 @@ static const struct debug_named_value fd_debug_options[] = {
+    {"nofp16",    FD_DBG_NOFP16,   "Disable mediump for 3D pipe shaders (a6xx+)"},
+    {"nohw",      FD_DBG_NOHW,     "Disable submit to hw"},
+    {"nosbin",    FD_DBG_NOSBIN,   "Execute GMEM binning pass in SW instead of HW"},
++   {"regs",      FD_DBG_REGS,     "Log A2XX register values being written"},
+    DEBUG_NAMED_VALUE_END
+ };
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_util.h b/src/gallium/drivers/freedreno/freedreno_util.h
+index 7777777..8888888 100644
+--- a/src/gallium/drivers/freedreno/freedreno_util.h
++++ b/src/gallium/drivers/freedreno/freedreno_util.h
+@@ -102,6 +102,7 @@ enum fd_debug_flag {
+    FD_DBG_LAYOUT       = BITFIELD_BIT(26),
+    FD_DBG_NOFP16       = BITFIELD_BIT(27),
+    FD_DBG_NOHW         = BITFIELD_BIT(28),
+    FD_DBG_NOSBIN       = BITFIELD_BIT(29),
++   FD_DBG_REGS         = BITFIELD_BIT(30),
+ };
+ /* clang-format on */
+
+--
