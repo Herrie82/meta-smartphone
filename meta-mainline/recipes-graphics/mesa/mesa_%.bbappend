@@ -11,7 +11,9 @@
 # 0007: REMOVED - Mesa 24.0.7 already has correct A22X register values
 # 0008: Add wait-for-idle after draw for A22X (fix random artifacts)
 # 0009: Add draw state debug logging for artifact analysis
-# 0010: Add WFI after gmem2mem for RTT sync (fix blur intermittent issue)
+# 0010: Add cache flush + WFI in 3 locations for GMEM sync on A22X (fix blur)
+# 0011: Initialize A220 registers (GRAS, LRZ/VSC) + keep clocks enabled (avoid underrun)
+# 0012: Initialize SQ_GPR_MANAGEMENT (allocate 64 GPRs each for VS/PS, fix faceted shading)
 #
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
@@ -25,4 +27,6 @@ SRC_URI:append = " \
     file://0008-freedreno-a2xx-add-wait-for-idle-after-draw-for-A22X.patch \
     file://0009-freedreno-a2xx-add-draw-state-debug-logging.patch \
     file://0010-freedreno-a2xx-add-WFI-after-gmem2mem-for-RTT-sync.patch \
+    file://0011-freedreno-a2xx-initialize-A220-registers-and-keep-cl.patch \
+    file://0012-freedreno-a2xx-initialize-SQ_GPR_MANAGEMENT-for-A22X.patch \
 "
