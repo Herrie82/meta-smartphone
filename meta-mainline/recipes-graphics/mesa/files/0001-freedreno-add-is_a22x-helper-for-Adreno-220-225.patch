@@ -1,0 +1,28 @@
+From 11f6393558d72be82bc8d88e961b295202b6a549 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Sat, 21 Feb 2026 18:01:35 +0100
+Subject: [PATCH 1/9] freedreno: add is_a22x() helper for Adreno 220/225
+
+Upstream-Status: Pending
+---
+ src/gallium/drivers/freedreno/freedreno_screen.h | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_screen.h b/src/gallium/drivers/freedreno/freedreno_screen.h
+index f3770d3..6a926ba 100644
+--- a/src/gallium/drivers/freedreno/freedreno_screen.h
++++ b/src/gallium/drivers/freedreno/freedreno_screen.h
+@@ -220,6 +220,13 @@ is_a2xx(struct fd_screen *screen)
+    return screen->gen == 2;
+ }
+ 
++/* a22x (Leia): Adreno 220, 225 - different from a20x (Yamato) */
++static inline bool
++is_a22x(struct fd_screen *screen)
++{
++   return (screen->gpu_id >= 220) && (screen->gpu_id < 230);
++}
++
+ /* is a3xx patch revision 0? */
+ /* TODO a306.0 probably doesn't need this.. be more clever?? */
+ static inline bool

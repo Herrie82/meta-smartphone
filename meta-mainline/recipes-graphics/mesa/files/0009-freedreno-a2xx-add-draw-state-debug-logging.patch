@@ -1,75 +1,30 @@
-From b439e2a26a6593fcc6c3800705b7bbdd13f24b30 Mon Sep 17 00:00:00 2001
+From 1dcf30b18874e23454b2077b742f4cc9206f7c5e Mon Sep 17 00:00:00 2001
 From: Herman van Hazendonk <github.com@herrie.org>
-Date: Tue, 10 Feb 2026 07:44:05 +0100
-Subject: [PATCH] freedreno/a2xx: add draw state debug logging for artifact
- debugging
+Date: Sat, 21 Feb 2026 18:06:54 +0100
+Subject: [PATCH 9/9] freedreno/a2xx: add draw state debug logging
 
 Add logging of draw call state (mode, count, start, dirty flags, shader
-pointers) to help identify differences between correct and incorrect
-renders. Enable with FD_MESA_DEBUG=msgs.
+pointers) and texture state to help identify differences between correct
+and incorrect renders. Enable with FD_MESA_DEBUG=msgs.
 
 Upstream-Status: Inappropriate [debug]
 Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
 ---
- src/gallium/drivers/freedreno/a2xx/fd2_draw.c | 31 +++++++++++++++++++
- src/gallium/drivers/freedreno/a2xx/fd2_emit.c |  8 +++++
- .../drivers/freedreno/a2xx/fd2_program.c      |  7 +++++
- 3 files changed, 46 insertions(+)
+ src/gallium/drivers/freedreno/a2xx/fd2_draw.c | 9 +++++++++
+ src/gallium/drivers/freedreno/a2xx/fd2_emit.c | 8 ++++++++
+ 2 files changed, 17 insertions(+)
 
 diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
-index 54c0f4d..d4353d8 100644
+index 5f22012..1536fe7 100644
 --- a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
 +++ b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
-@@ -75,6 +75,15 @@ emit_vertexbufs(struct fd_context *ctx) assert_dt
-       bufs[i].offset = vb->buffer_offset;
-       bufs[i].size = fd_bo_size(fd_resource(vb->buffer.resource)->bo);
-       bufs[i].prsc = vb->buffer.resource;
-+
-+      /* Debug: log vertex buffer details */
-+      if (FD_DBG(MSGS)) {
-+         struct fd_resource *rsc = fd_resource(vb->buffer.resource);
-+         mesa_logi("  VTX[%u]: elem=%u vbi=%u off=%u size=%u stride=%u gpu=0x%llx",
-+                   i, elem->src_offset, elem->vertex_buffer_index,
-+                   vb->buffer_offset, bufs[i].size, elem->src_stride,
-+                   (unsigned long long)(rsc->bo ? fd_bo_get_iova(rsc->bo) : 0));
-+      }
-    }
- 
-    // NOTE I believe the 0x78 (or 0x9c in solid_vp) relates to the
-@@ -89,6 +98,18 @@ draw_impl(struct fd_context *ctx, const struct pipe_draw_info *info,
-           const struct pipe_draw_start_count_bias *draw, struct fd_ringbuffer *ring,
-           unsigned index_offset, bool binning) assert_dt
- {
-+   /* Debug: log draw implementation details */
-+   if (FD_DBG(MSGS) && !binning) {
-+      mesa_logi("  DRAW_IMPL: idx_size=%u idx_off=%u start=%u count=%u",
-+                info->index_size, index_offset, draw->start, draw->count);
-+      if (info->index_size && info->index.resource) {
-+         struct fd_resource *rsc = fd_resource(info->index.resource);
-+         mesa_logi("  INDEX: gpu=0x%llx size=%zu",
-+                   (unsigned long long)(rsc->bo ? fd_bo_get_iova(rsc->bo) : 0),
-+                   fd_bo_size(rsc->bo));
-+      }
-+   }
-+
-    OUT_PKT3(ring, CP_SET_CONSTANT, 2);
-    OUT_RING(ring, CP_REG(REG_A2XX_VGT_INDX_OFFSET));
-    OUT_RING(ring, info->index_size ? 0 : draw->start);
-@@ -161,6 +182,8 @@ draw_impl(struct fd_context *ctx, const struct pipe_draw_info *info,
-    emit_cacheflush(ring);
- }
- 
-+static unsigned draw_num = 0;
-+
- static bool
- fd2_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *pinfo,
-              unsigned drawid_offset,
-@@ -175,6 +198,14 @@ fd2_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *pinfo,
+@@ -157,6 +157,15 @@ fd2_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *pinfo,
         !u_trim_pipe_prim(pinfo->mode, (unsigned *)&pdraw->count))
        return false;
  
 +   /* Debug: log draw state for comparison between good/bad runs */
 +   if (FD_DBG(MSGS)) {
++      static unsigned draw_num = 0;
 +      draw_num++;
 +      mesa_logi("DRAW[%u]: mode=%u count=%u start=%u dirty=0x%x vs=%p fs=%p",
 +                draw_num, pinfo->mode, pdraw->count, pdraw->start,
@@ -80,10 +35,10 @@ index 54c0f4d..d4353d8 100644
        emit_vertexbufs(ctx);
  
 diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
-index 2af7c39..4a4680a 100644
+index 2feefcb..163a416 100644
 --- a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
 +++ b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
-@@ -131,6 +131,14 @@ emit_texture(struct fd_ringbuffer *ring, struct fd_context *ctx,
+@@ -113,6 +113,14 @@ emit_texture(struct fd_ringbuffer *ring, struct fd_context *ctx,
  
     rsc = view->base.texture ? fd_resource(view->base.texture) : NULL;
  
@@ -98,24 +53,3 @@ index 2af7c39..4a4680a 100644
     OUT_PKT3(ring, CP_SET_CONSTANT, 7);
     OUT_RING(ring, 0x00010000 + (0x6 * const_idx));
  
-diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_program.c b/src/gallium/drivers/freedreno/a2xx/fd2_program.c
-index 7a403ef..cc1f2ee 100644
---- a/src/gallium/drivers/freedreno/a2xx/fd2_program.c
-+++ b/src/gallium/drivers/freedreno/a2xx/fd2_program.c
-@@ -243,6 +243,13 @@ fd2_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
-    fpi = &fp->variant[0].info;
-    f = &fp->variant[0].f;
- 
-+   /* Debug: log shader state */
-+   if (FD_DBG(MSGS) && !binning) {
-+      mesa_logi("  SHADER: vs_var=%u vs_dw=%u vs_reg=%d fs_dw=%u fs_reg=%d inputs=%u",
-+                variant, vpi->sizedwords, vpi->max_reg,
-+                fpi->sizedwords, fpi->max_reg, f->inputs_count);
-+   }
-+
-    /* clear/gmem2mem/mem2gmem need to be changed to remove this condition */
-    if (prog != &ctx->solid_prog && prog != &ctx->blit_prog[0]) {
-       patch_fetches(ctx, vpi, ctx->vtx.vtx, &ctx->tex[PIPE_SHADER_VERTEX]);
--- 
-2.43.0
-

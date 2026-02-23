@@ -1,0 +1,39 @@
+From 99813908a60a1d1a8175d826866118e9092e41d4 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Sun, 22 Feb 2026 20:32:00 +0100
+Subject: [PATCH] freedreno/a2xx: add WFI after constant emission on A22X
+
+Add Wait-For-Idle after emitting shader constants (uniforms) on
+Adreno 220/225 to ensure constants are fully written before draw.
+
+This fixes intermittent faceted rendering in benchmarks that use
+uniform colors (like glmark2 build), where shaders would randomly
+read stale constant values causing incorrect per-triangle colors.
+
+The build benchmark has no varying inputs (inputs_count=0), so its
+color comes entirely from uniforms. Without this WFI, ~90% of runs
+showed faceted rendering despite correct shader state.
+
+Upstream-Status: Pending [hardware workaround]
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_emit.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
+index 163a416..1a8ad64 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
+@@ -361,6 +361,13 @@ fd2_emit_state(struct fd_context *ctx, const enum fd_dirty_3d_state dirty)
+       emit_constants(ring, PS_CONST_BASE * 4,
+                      &ctx->constbuf[MESA_SHADER_FRAGMENT],
+                      (dirty & FD_DIRTY_PROG) ? ctx->prog.fs : NULL);
++
++      /* A22X workaround: WFI after constant emission to ensure shader
++       * constants are fully written before draw. Without this, shaders
++       * may read stale constant values causing incorrect colors.
++       */
++      if (is_a22x(ctx->screen))
++         OUT_WFI(ring);
+    }
+ 
+    if (dirty & (FD_DIRTY_BLEND | FD_DIRTY_ZSA)) {

@@ -1,0 +1,78 @@
+From 79275a04b284dbb022a8294fe76cbdd11522a678 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Mon, 23 Feb 2026 08:49:49 +0100
+Subject: [PATCH] freedreno/a2xx: use synchronous cache flush for A22X
+
+Replace asynchronous CACHE_FLUSH (0x06) with synchronous
+CACHE_FLUSH_AND_INV_EVENT (0x16) for Adreno 220/225 (Leia).
+The synchronous event waits for cache operations to complete,
+ensuring data coherency before the next operation.
+
+Also add WFI after TC_CNTL_STATUS L2 cache invalidation to
+ensure the invalidation completes before vertex/texture fetch.
+
+These changes address race conditions where:
+1. L2 cache invalidation wasn't completing before fetch
+2. Cache flush after draw was asynchronous, allowing
+   subsequent operations to see stale data
+
+Reference: KGSL defines CACHE_FLUSH_AND_INV_EVENT for A2XX
+
+Upstream-Status: Pending [hardware workaround for A22X]
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_draw.c | 24 +++++++++++++++----
+ 1 file changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
+index 4624b89..d44dbb0 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
+@@ -109,13 +109,22 @@ pack_rgba(enum pipe_format format, const float *rgba)
+ }
+ 
+ static void
+-emit_cacheflush(struct fd_ringbuffer *ring)
++emit_cacheflush(struct fd_ringbuffer *ring, bool sync)
+ {
+    unsigned i;
+ 
+-   for (i = 0; i < 12; i++) {
++   if (sync) {
++      /* A22X: Use synchronous cache flush and invalidate.
++       * CACHE_FLUSH_AND_INV_EVENT (0x16) waits for cache operations to complete,
++       * unlike CACHE_FLUSH (0x06) which is asynchronous.
++       */
+       OUT_PKT3(ring, CP_EVENT_WRITE, 1);
+-      OUT_RING(ring, CACHE_FLUSH);
++      OUT_RING(ring, CACHE_FLUSH_AND_INV_EVENT);
++   } else {
++      for (i = 0; i < 12; i++) {
++         OUT_PKT3(ring, CP_EVENT_WRITE, 1);
++         OUT_RING(ring, CACHE_FLUSH);
++      }
+    }
+ }
+ 
+@@ -165,6 +174,12 @@ draw_impl(struct fd_context *ctx, const struct pipe_draw_info *info,
+    OUT_PKT0(ring, REG_A2XX_TC_CNTL_STATUS, 1);
+    OUT_RING(ring, A2XX_TC_CNTL_STATUS_L2_INVALIDATE);
+ 
++   /* A22X: Wait for L2 cache invalidation to complete before proceeding.
++    * Without this, texture/vertex data may still be stale when fetch begins.
++    */
++   if (is_a22x(ctx->screen))
++      OUT_WFI(ring);
++
+    if (is_a20x(ctx->screen)) {
+       /* wait for DMA to finish and
+        * dummy draw one triangle with indexes 0,0,0.
+@@ -237,7 +252,8 @@ draw_impl(struct fd_context *ctx, const struct pipe_draw_info *info,
+       OUT_RING(ring, 0x00000000);
+    }
+ 
+-   emit_cacheflush(ring);
++   /* Use synchronous cache flush for A22X to ensure cache coherency */
++   emit_cacheflush(ring, is_a22x(ctx->screen));
+ }
+ 
+ static bool
