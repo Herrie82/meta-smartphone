@@ -40,8 +40,8 @@ SRC_URI:append = " \
     file://0045-freedreno-a2xx-fix-non-fast-clear-color-on-A22X-writ.patch \
     file://0046-freedreno-a2xx-aggressive-cache-flush-invalidate-at-.patch \
     file://0090-freedreno-a2xx-write-per-tile-VGT_CURRENT_BIN_ID-for.patch \
-    file://0091-freedreno-a2xx-skip-BIN_ID-zero-init-for-A22X.patch \
 "
+# 0091 absorbed into 0090 (combined patch, single hunk-set). Dropped to avoid double-patch.
 # 0017 DROPPED (this build): tests theory that the zero-initialization of VSC_PIPE
 # registers (which patch 0017 did at every batch start) puts the A22X binner into
 # auto-cycle mode. By dropping 0017 the binner sees no VSC writes from us at all

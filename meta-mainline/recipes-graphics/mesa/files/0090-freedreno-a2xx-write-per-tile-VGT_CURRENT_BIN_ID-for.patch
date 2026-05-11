@@ -1,77 +1,80 @@
-From 5623c96db17 Mon Sep 17 00:00:00 2001
+From combined Mon Sep 17 00:00:00 2001
 From: Herman van Hazendonk <github.com@herrie.org>
 Date: Mon, 11 May 2026 15:30:00 +0200
 Subject: [PATCH] freedreno/a2xx: write per-tile VGT_CURRENT_BIN_ID for A22X
- non-binning path (webOS encoding)
+ + skip BIN_ID=0 init
 
-The A22X (Adreno 220 / Leia) tile-rendering path has historically shown
-a deterministic period-8 pixel-hash render cycle. Visual analysis
-revealed these are GMEM tile-coverage failures (different subsets of
-the 2x3 GMEM tile grid get rendered per submit), not "wrong-colour
-renders" as previously characterised.
+Combined fix for the A22X period-8 tile-coverage cycle. Visual analysis
+confirmed the cycle is GMEM tile-binning visibility-stream variation
+(different subsets of the 2x3 GMEM tile grid rendered per submit, not
+"wrong colour" interpolation).
 
-Root cause: Mesa freedreno's fd2_gmem.c:60-64 disables hw_binning for
-A22X (marked TODO since forever). The A22X hardware binner is
-nevertheless active under the hood; with VGT_CURRENT_BIN_ID_MIN=MAX=0
-the binner uses internal state to choose tile coverage, producing
-2^3 = 8 distinct visibility patterns per submit.
+Mesa freedreno disables hw_binning for A22X (fd2_gmem.c:60-64 marked
+TODO). The hardware binner is still active and uses internal state to
+choose tile coverage when VGT_CURRENT_BIN_ID_MIN=MAX=0, producing 8
+distinct visibility patterns per submit.
 
-Fix: in fd2_emit_tile_renderprep, when not using hw binning AND on
-A22X, write VGT_CURRENT_BIN_ID_MIN=MAX per tile using the encoding
-observed in the closed-source webOS libGLESv2.so decompilation:
+Two-part fix:
 
-    bin_id = (col + 1) | (row << 3)
+1. In fd2_emit_tile_init, skip the BIN_ID=0 write entirely for A22X.
+   The 0 value triggers the indeterminate binner-state behaviour.
 
-The +1 offset is on the column field only (not row, unlike the A20X
-reference convention in freedreno_gmem.c:392). For the standard
-1024x768 / 2x3 tile layout the per-tile bin_ids are 0x01, 0x02,
-0x09, 0x0a, 0x11, 0x12 - all non-zero, all distinct. The (col+1)
-ensures the col-zero case lands on 1 instead of 0, the value the
-binner cycles around.
+2. In fd2_emit_tile_renderprep, write per-tile non-zero BIN_ID using
+   the encoding observed in the closed-source webOS libGLESv2.so decomp:
+   bin_id = (col + 1) | (row << 3).
+
+For our 2x3 GMEM tile layout the per-tile bin_ids are 0x01, 0x02,
+0x09, 0x0a, 0x11, 0x12 - all non-zero, all distinct.
+
+Earlier attempts at this (0090 v1) used the A20X reference encoding
+((row+1)<<3 | (col+1)) and were null. Deeper analysis showed webOS
+uses a different encoding (+1 only on col, not row), which this v2
+matches.
 
 Upstream-Status: Pending
 ---
- src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 48 +++++++++++++++++++
- 1 file changed, 48 insertions(+)
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 31 ++++++++++++++++---
+ 1 file changed, 27 insertions(+), 4 deletions(-)
 
-diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
---- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
-+++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
-@@ -729,6 +729,54 @@ fd2_emit_tile_renderprep(struct fd_batch *batch,
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c	2026-05-11 14:51:00.521078654 +0200
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c	2026-05-11 14:51:47.706867546 +0200
+@@ -541,14 +541,20 @@
+    }
+    util_dynarray_clear(&batch->gmem_patches);
+ 
+-   /* set to zero, for some reason hardware doesn't like certain values */
+-   OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+-   OUT_RING(ring, CP_REG(REG_A2XX_VGT_CURRENT_BIN_ID_MIN));
+-   OUT_RING(ring, 0);
++   /* set to zero, for some reason hardware doesn't like certain values
++    *
++    * A22X: skip the zero-write. Per-tile non-zero BIN_ID writes happen
++    * in fd2_emit_tile_renderprep below; let those be the only writes.
++    */
++   if (!is_a22x(ctx->screen)) {
++      OUT_PKT3(ring, CP_SET_CONSTANT, 2);
++      OUT_RING(ring, CP_REG(REG_A2XX_VGT_CURRENT_BIN_ID_MIN));
++      OUT_RING(ring, 0);
+ 
+-   OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+-   OUT_RING(ring, CP_REG(REG_A2XX_VGT_CURRENT_BIN_ID_MAX));
+-   OUT_RING(ring, 0);
++      OUT_PKT3(ring, CP_SET_CONSTANT, 2);
++      OUT_RING(ring, CP_REG(REG_A2XX_VGT_CURRENT_BIN_ID_MAX));
++      OUT_RING(ring, 0);
++   }
+ 
+    if (use_hw_binning(batch)) {
+       /* patch out unneeded memory exports by changing EXEC CF to EXEC_END
+@@ -729,6 +735,23 @@
        /* TODO only emit this when tile->p changes */
        OUT_PKT3(ring, CP_SET_DRAW_INIT_FLAGS, 1);
        OUT_RELOC(ring, pipe_bo, 0, 0, 0);
 +   } else if (is_a22x(ctx->screen)) {
 +      /*
 +       * A22X period-8 render-cycle fix: explicitly write per-tile bin ID.
-+       *
-+       * Without hardware binning enabled (use_hw_binning() returns false
-+       * for A22X - "TODO" in this file), Mesa previously left
-+       * VGT_CURRENT_BIN_ID_MIN = MAX = 0 throughout the tile loop (set
-+       * once in fd2_emit_tile_init with the comment "for some reason
-+       * hardware doesn't like certain values"). The A22X hardware binner
-+       * is nevertheless active under the hood; with bin_id pinned at 0
-+       * it uses some internal-counter state to decide tile coverage,
-+       * producing a deterministic 8-pattern visibility cycle observed
-+       * across many investigations.
-+       *
-+       * Encoding (revised 2026-05-11 from webOS libGLESv2.so decomp):
-+       *   bin_id = (col + 1) | (row << 3)
-+       *
-+       * Initial v1 attempted the A20X reference encoding
-+       * (((row+1) << 3) | (col+1) from freedreno_gmem.c:392) which
-+       * produced no effect. Deeper analysis of the webOS proprietary
-+       * decomp showed the pattern:
-+       *   uVar24 = uVar27 + 1 | iVar5 * 8 | uVar24;
-+       * which decodes as (col+1) | (row<<3) - col gets the +1
-+       * offset, row does not. This produces bin_id=0x01 for the
-+       * first tile rather than 0x09.
-+       *
-+       * For the standard 1024x768 / 2x3 tile layout this produces
-+       * bin_ids 0x01, 0x02, 0x09, 0x0a, 0x11, 0x12 - all non-zero,
-+       * all distinct. The (col+1) ensures the col-zero case lands
-+       * on 1 instead of 0 (the "reserved" value the binner cycles
-+       * around).
++       * Encoding from webOS libGLESv2.so decomp: (col+1) | (row<<3).
++       * For 2x3 layout: 0x01, 0x02, 0x09, 0x0a, 0x11, 0x12 - all non-zero.
 +       */
 +      uint32_t col = tile->xoff / tile->bin_w;
 +      uint32_t row = tile->yoff / tile->bin_h;
@@ -86,3 +89,4 @@ diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers
 +      OUT_RING(ring, bin_id);
     }
  }
+ 
