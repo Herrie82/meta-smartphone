@@ -40,7 +40,14 @@ SRC_URI:append = " \
     file://0045-freedreno-a2xx-fix-non-fast-clear-color-on-A22X-writ.patch \
     file://0046-freedreno-a2xx-aggressive-cache-flush-invalidate-at-.patch \
     file://0090-freedreno-a2xx-write-per-tile-VGT_CURRENT_BIN_ID-for.patch \
+    file://0092-freedreno-a2xx-Phase-0-LRZ_VSC_CONTROL-3-post-clear.patch \
 "
+# 0092 (Phase 0 hw-binning experiment): change LRZ_VSC_CONTROL post-clear write
+# from 0x00 (Mesa "disabled") to 0x03 (webOS proprietary "binning-active" value).
+# Single-byte change. If cycle collapses, the binner just needed the right
+# mode bits set. If null or hang, plan full hw binning port.
+# Ref: reports/a22x-hw-binning-port-analysis.md
+#
 # 0091 absorbed into 0090 (combined patch, single hunk-set). Dropped to avoid double-patch.
 # 0017 DROPPED (this build): tests theory that the zero-initialization of VSC_PIPE
 # registers (which patch 0017 did at every batch start) puts the A22X binner into
