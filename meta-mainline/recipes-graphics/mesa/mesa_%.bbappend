@@ -43,7 +43,18 @@ SRC_URI:append = " \
     file://0093-freedreno-a2xx-Fork-C-minimum-viable-A22X-hw-binning.patch \
     file://0094-freedreno-a2xx-VSC-pipe-BO-dump-diagnostic.patch \
     file://0095-freedreno-a2xx-ir2_nir-skip-memexport-CFs-for-A22X.patch \
+    file://0096-freedreno-a2xx-CP_SCRATCH-milestone-markers-Fork-AB.patch \
 "
+# 0096 (NEW, diagnostic): CP_SCRATCH milestone markers in fd2_emit_tile_init.
+# When Fork A/B hangs, a2xx_recover() dumps SCRATCH_REG0..7. With these
+# markers we see exactly how far the CP got before the hang:
+#   REG0=0x10001 entered fd2_emit_tile_init
+#   REG1=0x10002 after fd2_emit_restore
+#   REG2=0x10003 after Fork D prelude
+#   REG3=0x10004 before binning IB dispatch
+#   REG4=0x10005 after binning IB return
+#   REG5=0x10006 after binner disengage
+#   REG6=0x10007 end of fd2_emit_tile_init
 # 0095 (NEW): ir2_nir.c skip A20X memexport CFs in binning shader for A22X.
 # REQUIRED companion to 0093 Fork A/B — without this, the binning shader's
 # 8 memexport CFs write to undefined memory on A22X (A20X address constants
