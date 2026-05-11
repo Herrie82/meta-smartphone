@@ -31,30 +31,19 @@ References:
 
 Upstream-Status: Pending
 ---
- src/gallium/drivers/freedreno/a2xx/fd2_emit.c | 31 ++++++++++++++-----
- 1 file changed, 23 insertions(+), 8 deletions(-)
+ src/gallium/drivers/freedreno/a2xx/fd2_emit.c | 23 ++++++++++++++++---
+ 1 file changed, 20 insertions(+), 3 deletions(-)
 
 diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
-index 1531664fc15..2f68ca3b52c 100644
 --- a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
 +++ b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
-@@ -717,25 +717,40 @@ fd2_emit_restore(struct fd_context *ctx, struct fd_ringbuffer *ring)
-       mesa_logi("A2XX: SQ_GPR_MANAGEMENT=0x00040401 (VS=64 PS=64 + REG_DYNAMIC)");
-    }
- 
+@@ -547,15 +547,31 @@ fd2_emit_restore(struct fd_context *ctx, struct fd_ringbuffer *ring)
+    OUT_RING(ring, 0x5f601000);
+    OUT_RING(ring, 0x00000001);
+
 -   OUT_PKT0(ring, REG_A2XX_SQ_INST_STORE_MANAGMENT, 1);
 -   OUT_RING(ring, 0x00000180);
 -
--   /* Debug: Log instruction store management. */
--   if (FD_DBG(MSGS)) {
--      mesa_logi("A2XX: SQ_INST_STORE_MANAGMENT=0x00000180");
--   }
--
-    /* NOTE: SQ_PIX_IN_CNTL (0x0d0c) and SQ_RESOURCE_MANAGMENT (0x0d03) are
-     * Leia-specific registers defined in KGSL but writing to them causes
-     * GPU hang. DO NOT initialize these registers.
-     */
- 
 +   /* Re-ordered SQ inst-store partition sequence (A22X 8-cycle experiment).
 +    *
 +    * Match legacy KGSL build_shader_save_restore_cmds() restore path
@@ -73,20 +62,13 @@ index 1531664fc15..2f68ca3b52c 100644
 +    */
     OUT_PKT3(ring, CP_INVALIDATE_STATE, 1);
     OUT_RING(ring, 0x00000300);
- 
+
     OUT_PKT3(ring, CP_SET_SHADER_BASES, 1);
     OUT_RING(ring, 0x80000180);
- 
+
 +   OUT_PKT0(ring, REG_A2XX_SQ_INST_STORE_MANAGMENT, 1);
 +   OUT_RING(ring, 0x00000180);
-+
-+   if (FD_DBG(MSGS)) {
-+      mesa_logi("A2XX: SQ_INST_STORE_MANAGMENT=0x00000180 (post-reorder)");
-+   }
 +
     /* not sure what this form of CP_SET_CONSTANT is.. */
     OUT_PKT3(ring, CP_SET_CONSTANT, 13);
     OUT_RING(ring, 0x00000000);
--- 
-2.43.0
-
