@@ -1,52 +1,57 @@
-From forkd Mon Sep 17 00:00:00 2001
+From forkd_disengage Mon Sep 17 00:00:00 2001
 From: Herman van Hazendonk <github.com@herrie.org>
-Date: Mon, 11 May 2026 16:45:00 +0200
-Subject: [PATCH] freedreno/a2xx: Fork D - A22X hw binning prelude + SQ_GPR pulse
+Date: Mon, 11 May 2026 17:50:00 +0200
+Subject: [PATCH] freedreno/a2xx: Fork D - A22X hw binning prelude + binner disengage
 
 Adds the A22X hw binning prelude in fd2_emit_tile_init, matching
-webOS proprietary libGLESv2.so leia_configure_binning_pass:
+webOS proprietary libGLESv2.so leia_configure_binning_pass.
 
-  1. Allocate 8 VSC pipe BOs (256KB each, matches webOS initial alloc).
-  2. OUT_PKT0 A220_VSC_BIN_SIZE  (tile dims in 32-pixel units).
-  3. OUT_PKT0 VSC_PIPE[0..7] CONFIG + DATA_ADDRESS + DATA_LENGTH.
-  4. OUT_PKT0 reg 0xC00 = 1     (undocumented A220 "VSC enable").
-  5. CP_SET_CONSTANT A220_RB_LRZ_VSC_CONTROL = 3   (engage binner).
-  6. WFI.
-  7. OUT_PKT0 SQ_GPR_MANAGEMENT = 0x0007f010   (binning partition).
-  8. OUT_PKT0 SQ_GPR_MANAGEMENT = 0x00040401   (restore Mesa default).
+Discovery 2026-05-11: with the dump-diagnostic patch (0094) enabled
+in double-render mode, EVERY second batch hangs the GPU. netconsole
+showed 62 hangchecks all with fence delta = 1 (completed N, submitted
+N+1 stuck). Cause: the binner doesn't naturally disengage between
+batches. clear_state_restore writes LRZ_VSC_CONTROL=0 at batch start
+but apparently without a WFI to commit the disengage, so the next
+batch's LRZ_VSC_CONTROL=3 write engages an already-engaged binner and
+deadlocks.
 
-CRITICAL: VSC registers at 0x0C00..0x0C1D are BELOW the 3D state block
-(0x2000-0x2FFF) that CP_SET_CONSTANT uses. Mesa's CP_REG() macro does
-(reg - 0x2000) and only works for registers >= 0x2000. For VSC
-registers we must use raw PM4 type-0 packets via OUT_PKT0. webOS does
-the same (type-0 packet 0x170c06 for the 24-reg VSC_PIPE block).
+Fix: emit an explicit LRZ_VSC_CONTROL=0 + WFI at the very start of
+the prelude in fd2_emit_tile_init. This guarantees the binner is in a
+known disengaged state before we re-engage it.
+
+Full prelude order (matches webOS where applicable):
+  1. CP_SET_CONSTANT LRZ_VSC_CONTROL = 0   (force disengage, NEW)
+  2. WFI                                    (commit disengage, NEW)
+  3. (allocate 8 VSC pipe BOs)
+  4. OUT_PKT0 A220_VSC_BIN_SIZE             (tile dims in 32-pixel units)
+  5. OUT_PKT0 VSC_PIPE[0..7] CONFIG + ADDR + LEN
+  6. OUT_PKT0 reg 0xC00 = 1                 (undocumented "VSC enable")
+  7. CP_SET_CONSTANT LRZ_VSC_CONTROL = 3   (engage binner, webOS step 2)
+  8. WFI                                    (webOS step 3)
+  9. OUT_PKT0 SQ_GPR_MANAGEMENT = 0x0007f010   (binning partition)
+ 10. OUT_PKT0 SQ_GPR_MANAGEMENT = 0x00040401   (restore Mesa default)
+
+CRITICAL: VSC registers at 0x0C00..0x0C1D are BELOW the 3D state
+block (0x2000-0x2FFF) that CP_SET_CONSTANT uses. Mesa's CP_REG()
+macro does (reg - 0x2000) and only works for registers >= 0x2000.
+For VSC registers we must use raw PM4 type-0 packets via OUT_PKT0.
 
 LRZ_VSC_CONTROL at 0x2209 is in the 3D state block — CP_SET_CONSTANT
 is correct there.
 
-Result (30 caps, fresh sysrq reboot):
-  - Zero GPU hangs
-  - Period-8 cycle persists with 4/7 wrong hashes changed vs Fork C v2
-  - 5adc3160 (golden) and 2c65153c (5/6-correct) preserved
-  - Total Manhattan error across 7 wrong hashes only 2% lower than
-    Fork C v2 — SQ_GPR_MANAGEMENT pulse has minor measurable effect
-    but does NOT collapse the cycle
-
-The 8-state cycle persists. Per-hash kernel debugfs (vgt + sq) captured
-2026-05-11 with kernel debug additions confirmed all 8 cycle hashes
-produce BYTE-IDENTICAL register state. Cycle source is not in MMIO.
-
-Patch 0094 adds CPU-side dump of VSC pipe BO contents to localize cycle
-source to either the binner (varies per phase) or downstream HW.
+Single-render mode never showed hangs (binner gets to idle between
+process invocations); the disengage primarily fixes double-render
+mode (FD2_VSC_DUMP=1 with companion 0094 patch) so that diagnostic
+can complete without GPU lockups.
 
 Upstream-Status: Pending
 ---
- src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 117 ++++++++++++++++++
- 1 file changed, 117 insertions(+)
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 127 ++++++++++++++++++
+ 1 file changed, 127 insertions(+)
 
 --- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
 +++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
-@@ -676,6 +676,123 @@
+@@ -676,6 +676,143 @@
        OUT_RING(ring, 0);
     }
  
@@ -119,6 +124,26 @@ Upstream-Status: Pending
 +         OUT_RELOC(ring, ctx->vsc_pipe_bo[i], 0, 0, 0);
 +         OUT_RING(ring, fd_bo_size(ctx->vsc_pipe_bo[i]));
 +      }
++
++      /* Explicit disengage of any previously-engaged binner before
++       * re-engaging in this batch.
++       *
++       * Hangs investigation 2026-05-11: with FD2_VSC_DUMP=1 enabling
++       * double-render mode, every gl-cap invocation hangs on the
++       * second batch's submission. netconsole shows fence delta = 1
++       * across 62 hangchecks (batch N+1 hangs every time). Cause:
++       * the binner stays engaged across batches; the second batch's
++       * LRZ_VSC_CONTROL=3 write on an already-engaged binner deadlocks.
++       *
++       * clear_state_restore writes LRZ_VSC_CONTROL=0 at batch start but
++       * that path may not include a WFI, so the disengage doesn't commit
++       * before our prelude runs. Force a clean disengage with explicit
++       * WFI here so the engage that follows starts from a known state.
++       */
++      OUT_PKT3(ring, CP_SET_CONSTANT, 2);
++      OUT_RING(ring, CP_REG(REG_A2XX_A220_RB_LRZ_VSC_CONTROL));
++      OUT_RING(ring, 0x00000000);
++      OUT_WFI(ring);
 +
 +      /* A220_VSC_ENABLE @ 0xC00 = 1 -- undocumented master enable.
 +       * webOS writes this via a type-0 PM4 packet. The register is not

@@ -1,29 +1,21 @@
 From forkd_dump Mon Sep 17 00:00:00 2001
 From: Herman van Hazendonk <github.com@herrie.org>
-Date: Mon, 11 May 2026 17:30:00 +0200
+Date: Mon, 11 May 2026 17:55:00 +0200
 Subject: [PATCH] freedreno/a2xx: diagnostic VSC pipe BO dump (FD2_VSC_DUMP env)
 
-Per-hash kernel debugfs (vgt + sq) captured 2026-05-11 confirmed all 8
-period-cycle hashes produce BYTE-IDENTICAL register state. The cycle
-source is therefore NOT in any MMIO register — must be in either:
-  - The actual VSC pipe BO byte contents (binner wrote different
-    visibility streams per cycle phase, even with constant DATA_LENGTH)
-  - Internal hardware state machines hidden from the register interface
+Diagnostic-only. When env var FD2_VSC_DUMP is set, dump the first
+4KB of each VSC pipe BO at the start of fd2_emit_tile_init (before
+re-using the BO for this batch). Captures the previous batch's
+binner output, written to /tmp/vsc_pipe<P>_batch<N>.dump.
 
-This patch adds CPU-side dumping of the first 4KB of each VSC pipe BO
-at the START of fd2_emit_tile_init (before BOs are re-used). Enabled
-via env var FD2_VSC_DUMP. Output: /tmp/vsc_pipe<P>_batch<N>.dump.
+First batch dumps zeros (BOs newly allocated). Subsequent batches
+dump prior binner output. Companion gl-cap-and-regdump-mainline
+renders triangle twice when FD2_VSC_DUMP set, so each invocation
+produces a batch-0 (empty) + batch-1 (real binner output) pair.
 
-First batch in a process dumps zeros (BOs newly allocated). Second and
-subsequent batches dump the previous batch's binner output. The
-companion gl-cap-and-regdump-mainline.c change renders the test
-triangle twice per invocation when FD2_VSC_DUMP is set, so each
-invocation produces a batch-0 (empty) + batch-1 (real binner output)
-dump pair.
-
-If batch-1 bytes vary across the 8 cycle hashes, the binner IS cycling
-internally. If batch-1 bytes are byte-identical across hashes, the
-cycle is downstream of the binner (rasterizer/RB latched state).
+First test of this diagnostic (2026-05-11) hung the GPU on every
+second batch — fixed by adding explicit binner disengage in 0093
+(which now ships with this 0094).
 
 NO functional change to rendering when env var unset.
 
