@@ -1,21 +1,19 @@
-From forkd_dump Mon Sep 17 00:00:00 2001
+From forkab_dump Mon Sep 17 00:00:00 2001
 From: Herman van Hazendonk <github.com@herrie.org>
-Date: Mon, 11 May 2026 17:55:00 +0200
+Date: Mon, 11 May 2026 18:35:00 +0200
 Subject: [PATCH] freedreno/a2xx: diagnostic VSC pipe BO dump (FD2_VSC_DUMP env)
 
 Diagnostic-only. When env var FD2_VSC_DUMP is set, dump the first
 4KB of each VSC pipe BO at the start of fd2_emit_tile_init (before
-re-using the BO for this batch). Captures the previous batch's
-binner output, written to /tmp/vsc_pipe<P>_batch<N>.dump.
+re-using the BO for this batch). Used to confirm the hw binner
+actually wrote visibility data per pipe.
 
-First batch dumps zeros (BOs newly allocated). Subsequent batches
-dump prior binner output. Companion gl-cap-and-regdump-mainline
-renders triangle twice when FD2_VSC_DUMP set, so each invocation
-produces a batch-0 (empty) + batch-1 (real binner output) pair.
+Companion gl-cap-and-regdump-mainline renders triangle twice when
+FD2_VSC_DUMP set, producing batch-0 (empty) + batch-1 (real binner
+output) dump pair per invocation.
 
-First test of this diagnostic (2026-05-11) hung the GPU on every
-second batch — fixed by adding explicit binner disengage in 0093
-(which now ships with this 0094).
+Used during Fork A/B testing to verify the hw binner produces
+non-zero visibility data after the prelude engages it.
 
 NO functional change to rendering when env var unset.
 
@@ -26,8 +24,8 @@ Upstream-Status: Inappropriate [diagnostic only]
 
 --- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
 +++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
-@@ -703,6 +703,43 @@
-    if (is_a22x(ctx->screen)) {
+@@ -708,6 +708,43 @@
+    if (is_a22x(ctx->screen) && use_hw_binning(batch)) {
        const unsigned num_pipes = 8;
  
 +      /* DIAGNOSTIC: dump VSC pipe BO contents from the PREVIOUS batch
