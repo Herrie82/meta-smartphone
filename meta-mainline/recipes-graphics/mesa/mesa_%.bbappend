@@ -42,7 +42,14 @@ SRC_URI:append = " \
     file://0090-freedreno-a2xx-write-per-tile-VGT_CURRENT_BIN_ID-for.patch \
     file://0093-freedreno-a2xx-Fork-C-minimum-viable-A22X-hw-binning.patch \
     file://0094-freedreno-a2xx-VSC-pipe-BO-dump-diagnostic.patch \
+    file://0095-freedreno-a2xx-ir2_nir-skip-memexport-CFs-for-A22X.patch \
 "
+# 0095 (NEW): ir2_nir.c skip A20X memexport CFs in binning shader for A22X.
+# REQUIRED companion to 0093 Fork A/B — without this, the binning shader's
+# 8 memexport CFs write to undefined memory on A22X (A20X address constants
+# are skipped in fd2_gmem.c), causing GPU MMU faults + hard hangs.
+# First Fork A/B test (libgallium md5 cd138bc17bfb) hard-locked the device
+# on submit#1 — netconsole stopped after one submit. Adding this patch.
 # 0093 (CURRENT): Fork A/B full A22X hw binning integration.
 # Filename kept as "Fork-C-minimum-viable" for historical continuity
 # (avoid build-cache churn) but the content has evolved:
