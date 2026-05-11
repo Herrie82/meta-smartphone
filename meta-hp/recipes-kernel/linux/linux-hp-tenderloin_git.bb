@@ -20,7 +20,7 @@ KBUILD_DEFCONFIG:tenderloin = "tenderloin_debug_defconfig"
 KCONFIG_MODE = "alldefconfig"
 
 
-SRCREV_machine = "16968d67900876af47674d0d36c80f5f86e21c73"
+SRCREV_machine = "712357a6dcec210bf2f29d184fe0a4b39e9fa1a0"
 SRCREV_meta = "8ac9b1baf5d3cc1cb53a87a449b52f253dc32cab"
 
 SRC_URI = " \
