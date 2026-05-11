@@ -44,7 +44,14 @@ SRC_URI:append = " \
     file://0094-freedreno-a2xx-VSC-pipe-BO-dump-diagnostic.patch \
     file://0095-freedreno-a2xx-ir2_nir-skip-memexport-CFs-for-A22X.patch \
     file://0096-freedreno-a2xx-CP_SCRATCH-milestone-markers-Fork-AB.patch \
+    file://0097-freedreno-a2xx-bisect-toggles-Fork-AB-env-vars.patch \
 "
+# 0097 (NEW, diagnostic): env-var bisect toggles for Fork A/B hang
+# investigation. Available env vars:
+#   FD2_SKIP_PRELUDE      skip Fork D prelude (no LRZ_VSC_CONTROL=3 engage)
+#   FD2_SKIP_DISENGAGE    skip LRZ_VSC_CONTROL=0 disengage after binning IB
+#   FD2_RUN_BINNING_IB    run the binning IB (default = skip)
+# Single build supports multiple bisect configurations.
 # 0096 (NEW, diagnostic): CP_SCRATCH milestone markers in fd2_emit_tile_init.
 # When Fork A/B hangs, a2xx_recover() dumps SCRATCH_REG0..7. With these
 # markers we see exactly how far the CP got before the hang:
