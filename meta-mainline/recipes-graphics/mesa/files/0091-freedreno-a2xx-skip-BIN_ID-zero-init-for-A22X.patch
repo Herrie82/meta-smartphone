@@ -1,0 +1,63 @@
+From 831504a1562 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Mon, 11 May 2026 14:50:00 +0200
+Subject: [PATCH] freedreno/a2xx: skip BIN_ID=0 init for A22X (let per-tile
+ write be the only write)
+
+After deploying patch 0090 (write per-tile VGT_CURRENT_BIN_ID for A22X
+non-binning path) and seeing zero effect on the period-8 cycle, the
+follow-up hypothesis: the initial BIN_ID=0 write in fd2_emit_tile_init
+(emitted ONCE at the start of every batch, before the per-tile loop)
+puts the binner into "auto-cycle mode". The per-tile writes that come
+later in the cmdstream may be too late - the binner has already
+committed to a 1-of-8 visibility pattern.
+
+Skip the BIN_ID=0 write entirely on A22X. The per-tile writes in
+fd2_emit_tile_renderprep (added in the previous commit) become the
+only writes to these registers, and they're always non-zero.
+
+The original comment "for some reason hardware doesn't like certain
+values" is consistent with this theory - 0 is the value the binner
+doesn't like, and writing it explicitly was the actual problem.
+
+Upstream-Status: Pending
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 24 +++++++++++++------
+ 1 file changed, 17 insertions(+), 7 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -541,14 +541,24 @@
+    }
+    util_dynarray_clear(&batch->gmem_patches);
+
+-   /* set to zero, for some reason hardware doesn't like certain values */
+-   OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+-   OUT_RING(ring, CP_REG(REG_A2XX_VGT_CURRENT_BIN_ID_MIN));
+-   OUT_RING(ring, 0);
+-
+-   OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+-   OUT_RING(ring, CP_REG(REG_A2XX_VGT_CURRENT_BIN_ID_MAX));
+-   OUT_RING(ring, 0);
++   /* set to zero, for some reason hardware doesn't like certain values
++    *
++    * A22X: skip the zero-write. The 0-value-is-bad warning in the
++    * original comment is real - the A22X hardware binner enters a
++    * cycling-state-machine mode when BIN_ID=0, producing the period-8
++    * tile-coverage cycle. Per-tile non-zero BIN_ID writes happen in
++    * fd2_emit_tile_renderprep below; let those be the only writes so
++    * the binner never sees BIN_ID=0.
++    */
++   if (!is_a22x(ctx->screen)) {
++      OUT_PKT3(ring, CP_SET_CONSTANT, 2);
++      OUT_RING(ring, CP_REG(REG_A2XX_VGT_CURRENT_BIN_ID_MIN));
++      OUT_RING(ring, 0);
++
++      OUT_PKT3(ring, CP_SET_CONSTANT, 2);
++      OUT_RING(ring, CP_REG(REG_A2XX_VGT_CURRENT_BIN_ID_MAX));
++      OUT_RING(ring, 0);
++   }
+
+    if (use_hw_binning(batch)) {
+       /* patch out unneeded memory exports by changing EXEC CF to EXEC_END

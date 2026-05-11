@@ -36,12 +36,22 @@ PACKAGECONFIG:append = " freedreno"
 SRC_URI:append = " \
     file://0001-freedreno-add-is_a22x-helper-for-Adreno-220-225.patch \
     file://0002-freedreno-a2xx-increase-scheduler-instruction-limit.patch \
-    file://0017-freedreno-a2xx-initialize-VSC-registers-for-A22X.patch \
     file://0040-freedreno-a2xx-WAIT_FOR_IDLE-at-start-of-fd2_emit_re.patch \
     file://0045-freedreno-a2xx-fix-non-fast-clear-color-on-A22X-writ.patch \
     file://0046-freedreno-a2xx-aggressive-cache-flush-invalidate-at-.patch \
     file://0090-freedreno-a2xx-write-per-tile-VGT_CURRENT_BIN_ID-for.patch \
+    file://0091-freedreno-a2xx-skip-BIN_ID-zero-init-for-A22X.patch \
 "
+# 0017 DROPPED (this build): tests theory that the zero-initialization of VSC_PIPE
+# registers (which patch 0017 did at every batch start) puts the A22X binner into
+# auto-cycle mode. By dropping 0017 the binner sees no VSC writes from us at all
+# and may stabilize on whatever state it had.
+#
+# 0091 (NEW): skip BIN_ID=0 write in fd2_emit_tile_init for A22X. Follow-up to
+# 0090 - the initial 0-write at batch start may put binner in auto-cycle mode
+# before the per-tile non-zero writes from 0090 can take effect. Skipping the
+# 0-write entirely lets the per-tile writes be the only ones.
+#
 # 0090 (HYPOTHESIS test): write per-tile VGT_CURRENT_BIN_ID for A22X non-binning.
 # Visual analysis 2026-05-11 confirmed period-8 cycle is tile-coverage failure,
 # not interpolation. Theory: A22X hw binner is active even though Mesa's
