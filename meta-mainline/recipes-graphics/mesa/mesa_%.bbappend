@@ -40,5 +40,11 @@ SRC_URI:append = " \
     file://0040-freedreno-a2xx-WAIT_FOR_IDLE-at-start-of-fd2_emit_re.patch \
     file://0045-freedreno-a2xx-fix-non-fast-clear-color-on-A22X-writ.patch \
     file://0046-freedreno-a2xx-aggressive-cache-flush-invalidate-at-.patch \
-    file://0080-freedreno-a2xx-reorder-SQ-inst-store-partition-seque.patch \
 "
+# 0080 (REMOVED): reorder SQ inst-store partition + INVALIDATE_STATE + SET_SHADER_BASES
+# sequence in fd2_emit_restore to match legacy KGSL build_shader_save_restore_cmds
+# restore-path order. Tested 5/11/2026 with kernel 3c78981d (force_collapse=N) and
+# 100-cap test: produced byte-identical 8-cycle (87108faf 73bb37bb 5adc3160 259d419d
+# acb14db9 9dbee617 0ad64bdc 070bdc57) with 12.5% 5adc3160 - zero change vs baseline.
+# Falsifies the "CP_INVALIDATE_STATE clobbers SQ_INST_STORE_MANAGMENT" hypothesis.
+# Patch file kept on disk but excluded from SRC_URI.
