@@ -1,54 +1,52 @@
-From forkd_dump Mon Sep 17 00:00:00 2001
+From forkd Mon Sep 17 00:00:00 2001
 From: Herman van Hazendonk <github.com@herrie.org>
-Date: Mon, 11 May 2026 17:00:00 +0200
-Subject: [PATCH] freedreno/a2xx: Fork D + VSC pipe BO dump (FD2_VSC_DUMP env)
+Date: Mon, 11 May 2026 16:45:00 +0200
+Subject: [PATCH] freedreno/a2xx: Fork D - A22X hw binning prelude + SQ_GPR pulse
 
-Builds on Fork C v2 + Fork D (SQ_GPR_MANAGEMENT pulse) + adds a
-diagnostic VSC pipe BO content dump.
+Adds the A22X hw binning prelude in fd2_emit_tile_init, matching
+webOS proprietary libGLESv2.so leia_configure_binning_pass:
 
-Per-hash kernel debugfs (vgt + sq) captured 2026-05-11 confirmed all 8
-period-cycle hashes produce BYTE-IDENTICAL register state. The cycle
-source is therefore NOT in any MMIO register — must be in either:
-  - The actual VSC pipe BO byte contents (binner wrote different
-    visibility streams per cycle phase, even with constant DATA_LENGTH)
-  - Internal hardware state machines hidden from the register interface
+  1. Allocate 8 VSC pipe BOs (256KB each, matches webOS initial alloc).
+  2. OUT_PKT0 A220_VSC_BIN_SIZE  (tile dims in 32-pixel units).
+  3. OUT_PKT0 VSC_PIPE[0..7] CONFIG + DATA_ADDRESS + DATA_LENGTH.
+  4. OUT_PKT0 reg 0xC00 = 1     (undocumented A220 "VSC enable").
+  5. CP_SET_CONSTANT A220_RB_LRZ_VSC_CONTROL = 3   (engage binner).
+  6. WFI.
+  7. OUT_PKT0 SQ_GPR_MANAGEMENT = 0x0007f010   (binning partition).
+  8. OUT_PKT0 SQ_GPR_MANAGEMENT = 0x00040401   (restore Mesa default).
 
-This patch adds CPU-side dumping of the first 4KB of each VSC pipe BO
-at the START of fd2_emit_tile_init (before BOs are re-used). Enabled
-via env var FD2_VSC_DUMP. Output: /tmp/vsc_pipe<P>_batch<N>.dump.
+CRITICAL: VSC registers at 0x0C00..0x0C1D are BELOW the 3D state block
+(0x2000-0x2FFF) that CP_SET_CONSTANT uses. Mesa's CP_REG() macro does
+(reg - 0x2000) and only works for registers >= 0x2000. For VSC
+registers we must use raw PM4 type-0 packets via OUT_PKT0. webOS does
+the same (type-0 packet 0x170c06 for the 24-reg VSC_PIPE block).
 
-First batch in a process dumps zeros (BOs newly allocated). Second and
-subsequent batches dump the previous batch's binner output. The
-companion gl-cap-and-regdump-mainline.c change renders the test
-triangle twice per invocation when FD2_VSC_DUMP is set, so each
-invocation produces a batch-0 (empty) + batch-1 (real binner output)
-dump pair.
+LRZ_VSC_CONTROL at 0x2209 is in the 3D state block — CP_SET_CONSTANT
+is correct there.
 
-If batch-1 bytes vary across the 8 cycle hashes, the binner IS
-cycling internally. If batch-1 bytes are byte-identical across hashes,
-the cycle is downstream of the binner (rasterizer/RB latched state).
+Result (30 caps, fresh sysrq reboot):
+  - Zero GPU hangs
+  - Period-8 cycle persists with 4/7 wrong hashes changed vs Fork C v2
+  - 5adc3160 (golden) and 2c65153c (5/6-correct) preserved
+  - Total Manhattan error across 7 wrong hashes only 2% lower than
+    Fork C v2 — SQ_GPR_MANAGEMENT pulse has minor measurable effect
+    but does NOT collapse the cycle
 
-NO functional change to rendering when env var unset.
+The 8-state cycle persists. Per-hash kernel debugfs (vgt + sq) captured
+2026-05-11 with kernel debug additions confirmed all 8 cycle hashes
+produce BYTE-IDENTICAL register state. Cycle source is not in MMIO.
 
-Includes Fork C v2 + Fork D body:
-  - OUT_PKT0(0xC00 = 1)              (VSC enable per webOS)
-  - CP_SET_CONSTANT LRZ_VSC_CONTROL = 3   (engage binner)
-  - OUT_WFI (per webOS ordering, AFTER LRZ_VSC_CONTROL)
-  - OUT_PKT0(SQ_GPR_MANAGEMENT = 0x0007f010)   (binning partition)
-  - OUT_WFI
-  - OUT_PKT0(SQ_GPR_MANAGEMENT = 0x00040401)   (restore for real shader)
-
-Reference: reports/a22x-hw-binning-port-analysis.md
-           reports/fb-captures/fork-d-percap-debugfs/README.md
+Patch 0094 adds CPU-side dump of VSC pipe BO contents to localize cycle
+source to either the binner (varies per phase) or downstream HW.
 
 Upstream-Status: Pending
 ---
- src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 163 ++++++++++++++++++
- 1 file changed, 163 insertions(+)
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 117 ++++++++++++++++++
+ 1 file changed, 117 insertions(+)
 
 --- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
 +++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
-@@ -676,6 +676,160 @@
+@@ -676,6 +676,123 @@
        OUT_RING(ring, 0);
     }
  
@@ -78,43 +76,6 @@ Upstream-Status: Pending
 +    */
 +   if (is_a22x(ctx->screen)) {
 +      const unsigned num_pipes = 8;
-+
-+      /* DIAGNOSTIC: dump VSC pipe BO contents from the PREVIOUS batch
-+       * (which contains the binner's visibility stream output for that
-+       * batch's tile geometry) before we re-use the BOs for this batch.
-+       *
-+       * Enabled when env var FD2_VSC_DUMP is set. First batch in a
-+       * process will dump zeros (BOs freshly allocated below); the
-+       * second and subsequent batches will see the prior binner output.
-+       *
-+       * Output: /tmp/vsc_pipe<P>_batch<N>.dump (first 4KB per pipe).
-+       *
-+       * Used to determine whether the period-8 render cycle has its
-+       * source in the binner (different VSC byte content per phase)
-+       * or downstream (rasterizer/RB processing same binner data
-+       * differently each cycle).
-+       */
-+      static int dump_batch_counter = 0;
-+      if (getenv("FD2_VSC_DUMP")) {
-+         for (int i = 0; i < num_pipes; i++) {
-+            if (!ctx->vsc_pipe_bo[i])
-+               continue;
-+            /* Wait for GPU to finish any pending writes to this BO. */
-+            fd_bo_cpu_prep(ctx->vsc_pipe_bo[i], ctx->pipe, FD_BO_PREP_READ);
-+            void *map = fd_bo_map(ctx->vsc_pipe_bo[i]);
-+            if (!map)
-+               continue;
-+            char path[64];
-+            snprintf(path, sizeof(path), "/tmp/vsc_pipe%d_batch%d.dump",
-+                     i, dump_batch_counter);
-+            FILE *f = fopen(path, "wb");
-+            if (f) {
-+               fwrite(map, 4096, 1, f);
-+               fclose(f);
-+            }
-+         }
-+         dump_batch_counter++;
-+      }
 +
 +      /* Allocate one 256KB VSC pipe BO per pipe (matches webOS initial
 +       * allocation in leia_binning_grow_vis_stream_buffer). Buffers are

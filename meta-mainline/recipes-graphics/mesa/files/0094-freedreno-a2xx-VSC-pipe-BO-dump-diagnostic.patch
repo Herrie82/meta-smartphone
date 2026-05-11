@@ -1,0 +1,80 @@
+From forkd_dump Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Mon, 11 May 2026 17:30:00 +0200
+Subject: [PATCH] freedreno/a2xx: diagnostic VSC pipe BO dump (FD2_VSC_DUMP env)
+
+Per-hash kernel debugfs (vgt + sq) captured 2026-05-11 confirmed all 8
+period-cycle hashes produce BYTE-IDENTICAL register state. The cycle
+source is therefore NOT in any MMIO register — must be in either:
+  - The actual VSC pipe BO byte contents (binner wrote different
+    visibility streams per cycle phase, even with constant DATA_LENGTH)
+  - Internal hardware state machines hidden from the register interface
+
+This patch adds CPU-side dumping of the first 4KB of each VSC pipe BO
+at the START of fd2_emit_tile_init (before BOs are re-used). Enabled
+via env var FD2_VSC_DUMP. Output: /tmp/vsc_pipe<P>_batch<N>.dump.
+
+First batch in a process dumps zeros (BOs newly allocated). Second and
+subsequent batches dump the previous batch's binner output. The
+companion gl-cap-and-regdump-mainline.c change renders the test
+triangle twice per invocation when FD2_VSC_DUMP is set, so each
+invocation produces a batch-0 (empty) + batch-1 (real binner output)
+dump pair.
+
+If batch-1 bytes vary across the 8 cycle hashes, the binner IS cycling
+internally. If batch-1 bytes are byte-identical across hashes, the
+cycle is downstream of the binner (rasterizer/RB latched state).
+
+NO functional change to rendering when env var unset.
+
+Upstream-Status: Inappropriate [diagnostic only]
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 37 +++++++++++++++++++
+ 1 file changed, 37 insertions(+)
+
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -703,6 +703,43 @@
+    if (is_a22x(ctx->screen)) {
+       const unsigned num_pipes = 8;
+ 
++      /* DIAGNOSTIC: dump VSC pipe BO contents from the PREVIOUS batch
++       * (which contains the binner's visibility stream output for that
++       * batch's tile geometry) before we re-use the BOs for this batch.
++       *
++       * Enabled when env var FD2_VSC_DUMP is set. First batch in a
++       * process will dump zeros (BOs freshly allocated below); the
++       * second and subsequent batches will see the prior binner output.
++       *
++       * Output: /tmp/vsc_pipe<P>_batch<N>.dump (first 4KB per pipe).
++       *
++       * Used to determine whether the period-8 render cycle has its
++       * source in the binner (different VSC byte content per phase)
++       * or downstream (rasterizer/RB processing same binner data
++       * differently each cycle).
++       */
++      static int dump_batch_counter = 0;
++      if (getenv("FD2_VSC_DUMP")) {
++         for (int i = 0; i < num_pipes; i++) {
++            if (!ctx->vsc_pipe_bo[i])
++               continue;
++            /* Wait for GPU to finish any pending writes to this BO. */
++            fd_bo_cpu_prep(ctx->vsc_pipe_bo[i], ctx->pipe, FD_BO_PREP_READ);
++            void *map = fd_bo_map(ctx->vsc_pipe_bo[i]);
++            if (!map)
++               continue;
++            char path[64];
++            snprintf(path, sizeof(path), "/tmp/vsc_pipe%d_batch%d.dump",
++                     i, dump_batch_counter);
++            FILE *f = fopen(path, "wb");
++            if (f) {
++               fwrite(map, 4096, 1, f);
++               fclose(f);
++            }
++         }
++         dump_batch_counter++;
++      }
++
+       /* Allocate one 256KB VSC pipe BO per pipe (matches webOS initial
+        * allocation in leia_binning_grow_vis_stream_buffer). Buffers are
+        * reused across batches; grown lazily if a future patch tracks

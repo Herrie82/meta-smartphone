@@ -41,7 +41,15 @@ SRC_URI:append = " \
     file://0046-freedreno-a2xx-aggressive-cache-flush-invalidate-at-.patch \
     file://0090-freedreno-a2xx-write-per-tile-VGT_CURRENT_BIN_ID-for.patch \
     file://0093-freedreno-a2xx-Fork-C-minimum-viable-A22X-hw-binning.patch \
+    file://0094-freedreno-a2xx-VSC-pipe-BO-dump-diagnostic.patch \
 "
+# 0094 (NEW): diagnostic VSC pipe BO content dump (env FD2_VSC_DUMP=1).
+# Per-hash debugfs proved cycle source not in MMIO. This dumps the
+# actual visibility-stream bytes the binner wrote per pipe, so we can
+# tell if the binner is cycling (different content per phase) or
+# downstream of binner (same content, different downstream interpretation).
+# No effect when env var unset. Used with gl-cap-and-regdump-mainline
+# double-render mode.
 # 0093 (NEW): Fork C minimum-viable A22X hw binning prelude.
 # Emits per-batch in fd2_emit_tile_init: allocates 8 VSC pipe BOs,
 # writes VSC_BIN_SIZE + VSC_PIPE[0..7] config + 0xC00=1 + LRZ_VSC_CONTROL=3.
