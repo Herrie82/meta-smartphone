@@ -43,25 +43,34 @@ SRC_URI:append = " \
     file://0093-freedreno-a2xx-Fork-C-minimum-viable-A22X-hw-binning.patch \
     file://0094-freedreno-a2xx-VSC-pipe-BO-dump-diagnostic.patch \
 "
+# 0093 (CURRENT): Fork A/B full A22X hw binning integration.
+# Filename kept as "Fork-C-minimum-viable" for historical continuity
+# (avoid build-cache churn) but the content has evolved:
+#   Fork C v1 (broken): CP_REG underflow for VSC regs
+#   Fork C v2: OUT_PKT0 fix, prelude works, cycle still period-8
+#   Fork D: + SQ_GPR_MANAGEMENT pulse, cycle shifts but persists
+#   Fork D + disengage: + LRZ_VSC_CONTROL=0 at prelude start
+#   Fork A/B (CURRENT): use_hw_binning() returns true for A22X,
+#     prelude gated on use_hw_binning, A20X-specific shader patching
+#     wrapped in is_a20x guards, batch->binning IB now runs for A22X,
+#     binner disengaged after IB completes, per-tile renderprep
+#     fires CP_SET_DRAW_INIT_FLAGS for A22X via use_hw_binning path.
+# Known follow-up: ir2_nir.c extra_position_exports still emits 8
+# A20X memexport CFs in the binning shader; for A22X these write to
+# undefined memory (we skip the A20X memexport address constants).
+# References:
+#   - leia_configure_binning_pass decomp (webos libGLESv2 @ 0x124a50)
+#   - reports/a22x-hw-binning-port-analysis.md
+#   - reports/a22x-hw-binning-phase2-impl-plan.md
+#
 # 0094 (NEW): diagnostic VSC pipe BO content dump (env FD2_VSC_DUMP=1).
 # Per-hash debugfs proved cycle source not in MMIO. This dumps the
 # actual visibility-stream bytes the binner wrote per pipe, so we can
 # tell if the binner is cycling (different content per phase) or
 # downstream of binner (same content, different downstream interpretation).
 # No effect when env var unset. Used with gl-cap-and-regdump-mainline
-# double-render mode.
-# 0093 (NEW): Fork C minimum-viable A22X hw binning prelude.
-# Emits per-batch in fd2_emit_tile_init: allocates 8 VSC pipe BOs,
-# writes VSC_BIN_SIZE + VSC_PIPE[0..7] config + 0xC00=1 + LRZ_VSC_CONTROL=3.
-# Builds on patch 0090's per-tile BIN_ID. Goal: keep Phase 0's cycle
-# collapse to 1 hash while removing the hang by giving the binner buffers
-# to write into. References:
-#   - leia_configure_binning_pass decomp (webos libGLESv2 @ 0x124a50)
-#   - reports/a22x-hw-binning-port-analysis.md
-# Expected outcomes:
-#   - 1 hash + correct framebuffer = Fork C succeeds (move to Fork A/B for perf)
-#   - 1 hash + tile-coverage artefacts = need two-pass rendering (Fork A/B)
-#   - hang again = missing state, add SQ_GPR_MANAGEMENT or WFI ordering
+# double-render mode. Helps verify the Fork A/B hw binner actually
+# produces non-zero visibility data per pipe.
 #
 # 0092 (DROPPED - hangs GPU): LRZ_VSC_CONTROL=0x03 partial-binning experiment.
 # Result 2026-05-11: cycle DID collapse (13/13 same hash) but GPU hangs on
