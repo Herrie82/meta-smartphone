@@ -40,7 +40,17 @@ SRC_URI:append = " \
     file://0040-freedreno-a2xx-WAIT_FOR_IDLE-at-start-of-fd2_emit_re.patch \
     file://0045-freedreno-a2xx-fix-non-fast-clear-color-on-A22X-writ.patch \
     file://0046-freedreno-a2xx-aggressive-cache-flush-invalidate-at-.patch \
+    file://0090-freedreno-a2xx-write-per-tile-VGT_CURRENT_BIN_ID-for.patch \
 "
+# 0090 (HYPOTHESIS test): write per-tile VGT_CURRENT_BIN_ID for A22X non-binning.
+# Visual analysis 2026-05-11 confirmed period-8 cycle is tile-coverage failure,
+# not interpolation. Theory: A22X hw binner is active even though Mesa's
+# use_hw_binning() returns false; with VGT_CURRENT_BIN_ID_MIN=MAX=0 the binner
+# uses internal state to choose tile coverage, producing 8 patterns. Writing
+# per-tile bin_id with the a20x ((row+1)<<3 | col+1) encoding (which is never 0)
+# should collapse cycle to 1 hash if hypothesis correct. If null, the BIN_ID
+# register doesn't drive the binner's relevant state machine.
+#
 # 0081 (REMOVED): bulk-zero all 4 shader-constant banks (ALU/TEX/BOOL/LOOP) in
 # fd2_emit_restore. Re-applied as a 3/8 alignment test - the original commits
 # bd9b43960f0 + 9e370652a6a celebrated 3/8 hash convergence which a later report
