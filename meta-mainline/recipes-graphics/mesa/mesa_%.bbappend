@@ -40,7 +40,15 @@ SRC_URI:append = " \
     file://0040-freedreno-a2xx-WAIT_FOR_IDLE-at-start-of-fd2_emit_re.patch \
     file://0045-freedreno-a2xx-fix-non-fast-clear-color-on-A22X-writ.patch \
     file://0046-freedreno-a2xx-aggressive-cache-flush-invalidate-at-.patch \
+    file://0081-freedreno-a2xx-zero-all-four-shader-constant-banks-i.patch \
 "
+# 0081 (re-applied): bulk-zero all 4 shader-constant banks (ALU/TEX/BOOL/LOOP) in
+# fd2_emit_restore. Re-application of previously-reverted mesa commits bd9b43960f0 +
+# 9e370652a6a. The reverts were based on a report that judged the resulting 3/8 vs
+# 1/8 hash convergence as "lucky phase alignment, not a real fix". A consistent 3x
+# improvement in correct-render rate is shippable however; re-applying to validate
+# whether 3/8 reproduces on the current kernel state (3c78981d).
+#
 # 0080 (REMOVED): reorder SQ inst-store partition + INVALIDATE_STATE + SET_SHADER_BASES
 # sequence in fd2_emit_restore to match legacy KGSL build_shader_save_restore_cmds
 # restore-path order. Tested 5/11/2026 with kernel 3c78981d (force_collapse=N) and
