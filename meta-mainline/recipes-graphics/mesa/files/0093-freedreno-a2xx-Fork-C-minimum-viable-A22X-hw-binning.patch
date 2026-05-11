@@ -1,0 +1,211 @@
+From forkd_dump Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Mon, 11 May 2026 17:00:00 +0200
+Subject: [PATCH] freedreno/a2xx: Fork D + VSC pipe BO dump (FD2_VSC_DUMP env)
+
+Builds on Fork C v2 + Fork D (SQ_GPR_MANAGEMENT pulse) + adds a
+diagnostic VSC pipe BO content dump.
+
+Per-hash kernel debugfs (vgt + sq) captured 2026-05-11 confirmed all 8
+period-cycle hashes produce BYTE-IDENTICAL register state. The cycle
+source is therefore NOT in any MMIO register — must be in either:
+  - The actual VSC pipe BO byte contents (binner wrote different
+    visibility streams per cycle phase, even with constant DATA_LENGTH)
+  - Internal hardware state machines hidden from the register interface
+
+This patch adds CPU-side dumping of the first 4KB of each VSC pipe BO
+at the START of fd2_emit_tile_init (before BOs are re-used). Enabled
+via env var FD2_VSC_DUMP. Output: /tmp/vsc_pipe<P>_batch<N>.dump.
+
+First batch in a process dumps zeros (BOs newly allocated). Second and
+subsequent batches dump the previous batch's binner output. The
+companion gl-cap-and-regdump-mainline.c change renders the test
+triangle twice per invocation when FD2_VSC_DUMP is set, so each
+invocation produces a batch-0 (empty) + batch-1 (real binner output)
+dump pair.
+
+If batch-1 bytes vary across the 8 cycle hashes, the binner IS
+cycling internally. If batch-1 bytes are byte-identical across hashes,
+the cycle is downstream of the binner (rasterizer/RB latched state).
+
+NO functional change to rendering when env var unset.
+
+Includes Fork C v2 + Fork D body:
+  - OUT_PKT0(0xC00 = 1)              (VSC enable per webOS)
+  - CP_SET_CONSTANT LRZ_VSC_CONTROL = 3   (engage binner)
+  - OUT_WFI (per webOS ordering, AFTER LRZ_VSC_CONTROL)
+  - OUT_PKT0(SQ_GPR_MANAGEMENT = 0x0007f010)   (binning partition)
+  - OUT_WFI
+  - OUT_PKT0(SQ_GPR_MANAGEMENT = 0x00040401)   (restore for real shader)
+
+Reference: reports/a22x-hw-binning-port-analysis.md
+           reports/fb-captures/fork-d-percap-debugfs/README.md
+
+Upstream-Status: Pending
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 163 ++++++++++++++++++
+ 1 file changed, 163 insertions(+)
+
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -676,6 +676,160 @@
+       OUT_RING(ring, 0);
+    }
+ 
++   /* A22X hw binning Fork C - minimum-viable prelude (2026-05-11)
++    *
++    * Emit the binning state setup matching webOS proprietary libGLESv2.so
++    * leia_configure_binning_pass (decomp @ 0x124a50):
++    *   1. VSC_BIN_SIZE  -- tile dimensions in 32px units
++    *   2. VSC_PIPE[0..7] CONFIG + DATA_ADDRESS + DATA_LENGTH for 8 pipes
++    *   3. A220_VSC_ENABLE @ 0xC00 = 1   (undocumented master enable)
++    *   4. A220_RB_LRZ_VSC_CONTROL = 3   (engage the binner)
++    *
++    * Phase 0 (LRZ_VSC_CONTROL=3 alone) collapsed the 8-cycle to 1 hash but
++    * hung the GPU because the binner had nowhere to write. This block adds
++    * the pipe BOs + VSC config so the binner has buffers, removing the hang.
++    *
++    * Fork C intentionally does NOT emit:
++    *   - SQ_GPR_MANAGEMENT = 0x7f010 (binning shader register partition).
++    *     We use the regular VS+PS shaders for both binning and rendering,
++    *     so the shader's own SQ_PROGRAM_CNTL handling stays in effect.
++    *   - A separate binning shader variant or two-pass rendering. The
++    *     binner produces visibility data passively during the normal
++    *     draw stream; tile filtering relies on the per-tile BIN_ID
++    *     writes from patch 0090.
++    *
++    * Reference: reports/a22x-hw-binning-port-analysis.md (sections 1-4).
++    */
++   if (is_a22x(ctx->screen)) {
++      const unsigned num_pipes = 8;
++
++      /* DIAGNOSTIC: dump VSC pipe BO contents from the PREVIOUS batch
++       * (which contains the binner's visibility stream output for that
++       * batch's tile geometry) before we re-use the BOs for this batch.
++       *
++       * Enabled when env var FD2_VSC_DUMP is set. First batch in a
++       * process will dump zeros (BOs freshly allocated below); the
++       * second and subsequent batches will see the prior binner output.
++       *
++       * Output: /tmp/vsc_pipe<P>_batch<N>.dump (first 4KB per pipe).
++       *
++       * Used to determine whether the period-8 render cycle has its
++       * source in the binner (different VSC byte content per phase)
++       * or downstream (rasterizer/RB processing same binner data
++       * differently each cycle).
++       */
++      static int dump_batch_counter = 0;
++      if (getenv("FD2_VSC_DUMP")) {
++         for (int i = 0; i < num_pipes; i++) {
++            if (!ctx->vsc_pipe_bo[i])
++               continue;
++            /* Wait for GPU to finish any pending writes to this BO. */
++            fd_bo_cpu_prep(ctx->vsc_pipe_bo[i], ctx->pipe, FD_BO_PREP_READ);
++            void *map = fd_bo_map(ctx->vsc_pipe_bo[i]);
++            if (!map)
++               continue;
++            char path[64];
++            snprintf(path, sizeof(path), "/tmp/vsc_pipe%d_batch%d.dump",
++                     i, dump_batch_counter);
++            FILE *f = fopen(path, "wb");
++            if (f) {
++               fwrite(map, 4096, 1, f);
++               fclose(f);
++            }
++         }
++         dump_batch_counter++;
++      }
++
++      /* Allocate one 256KB VSC pipe BO per pipe (matches webOS initial
++       * allocation in leia_binning_grow_vis_stream_buffer). Buffers are
++       * reused across batches; grown lazily if a future patch tracks
++       * pipe data length overflow.
++       */
++      for (int i = 0; i < num_pipes; i++) {
++         if (!ctx->vsc_pipe_bo[i]) {
++            ctx->vsc_pipe_bo[i] = fd_bo_new(ctx->dev, 0x40000, 0,
++                                            "a22x_vsc_pipe[%u]", i);
++            assert(ctx->vsc_pipe_bo[i]);
++         }
++      }
++
++      /* VSC_BIN_SIZE: bin_w / bin_h in 32-pixel units.
++       *
++       * NOTE: VSC registers live at 0x0C00..0x0C1D which is BELOW the
++       * 3D state block (0x2000-0x2FFF) that CP_SET_CONSTANT uses. Mesa's
++       * CP_REG() macro does (reg - 0x2000) and only works for registers
++       * >= 0x2000. For VSC registers we must use raw PM4 type-0 packets
++       * via OUT_PKT0. webOS does the same (type-0 packet 0x170c06 for
++       * the 24-reg VSC_PIPE block, 0x000c00 for the master enable).
++       */
++      OUT_PKT0(ring, REG_A2XX_A220_VSC_BIN_SIZE, 1);
++      OUT_RING(ring, A2XX_A220_VSC_BIN_SIZE_WIDTH(gmem->bin_w) |
++                     A2XX_A220_VSC_BIN_SIZE_HEIGHT(gmem->bin_h));
++
++      /* VSC_PIPE[0..7]: 24 consecutive regs at 0xC06 (CONFIG, ADDRESS, LENGTH)
++       * CONFIG encoding from webOS decomp: (h<<24)|(w<<20)|(y<<10)|x.
++       * Bit layout independently verified against documented A3XX
++       * VSC_PIPE_CONFIG (X[0:9], Y[10:19], W[20:23], H[24:27]).
++       */
++      OUT_PKT0(ring, REG_A2XX_VSC_PIPE_CONFIG(0), num_pipes * 3);
++      for (int i = 0; i < num_pipes; i++) {
++         const struct fd_vsc_pipe *pipe = &gmem->vsc_pipe[i];
++         uint32_t config = ((pipe->h & 0xf) << 24) |
++                           ((pipe->w & 0xf) << 20) |
++                           ((pipe->y & 0x3ff) << 10) |
++                           (pipe->x & 0x3ff);
++         OUT_RING(ring, config);
++         OUT_RELOC(ring, ctx->vsc_pipe_bo[i], 0, 0, 0);
++         OUT_RING(ring, fd_bo_size(ctx->vsc_pipe_bo[i]));
++      }
++
++      /* A220_VSC_ENABLE @ 0xC00 = 1 -- undocumented master enable.
++       * webOS writes this via a type-0 PM4 packet. The register is not
++       * in a2xx.xml so we use the raw address.
++       */
++      OUT_PKT0(ring, 0xC00, 1);
++      OUT_RING(ring, 1);
++
++      /* Engage the binner: A220_RB_LRZ_VSC_CONTROL = 3 (webOS value).
++       * WFI follows immediately after, per webOS ordering — earlier v2
++       * placed WFI BEFORE this write which was the wrong position.
++       */
++      OUT_PKT3(ring, CP_SET_CONSTANT, 2);
++      OUT_RING(ring, CP_REG(REG_A2XX_A220_RB_LRZ_VSC_CONTROL));
++      OUT_RING(ring, 0x00000003);
++
++      OUT_WFI(ring);
++
++      /* Fork D: pulse SQ_GPR_MANAGEMENT to the binning shader partition
++       * (REG_SIZE_VTX=127, REG_SIZE_PIX=1, REG_DYNAMIC=0) then restore
++       * to Mesa's dynamic value (0x00040401 = VS=64/PS=64 dynamic) so
++       * the regular VS+PS shaders that run for the actual draws have
++       * enough register budget.
++       *
++       * Hypothesis (Phase 1 analysis section 9, and 2c65153c "5/6 correct"
++       * observation): the A22X binner samples SQ_GPR_MANAGEMENT at engage
++       * time to define wavefront-slot boundaries for its visibility
++       * stream. With an unbounded/random initial value, the slot pointer
++       * rotates through 8 stable mis-indexed states (the period-8 cycle).
++       * Pulsing the boundary at engage clamps the slot allocator. Restore
++       * before draws ensures PS has the GPRs it needs.
++       *
++       * webOS writes this AFTER LRZ_VSC_CONTROL=3 + WFI without an
++       * explicit restore in the binning_pass cmdbuf — but webOS's render-
++       * pass shader load (rb_gpuprogram_loadexecutable_internal) emits
++       * its own SQ_GPR_MANAGEMENT for the real shader. Mesa's regular
++       * shader path doesn't re-emit SQ_GPR_MANAGEMENT per draw, so we
++       * restore here.
++       */
++      OUT_PKT0(ring, REG_A2XX_SQ_GPR_MANAGEMENT, 1);
++      OUT_RING(ring, 0x0007f010);   /* VTX=127, PIX=1, static */
++
++      OUT_WFI(ring);
++
++      OUT_PKT0(ring, REG_A2XX_SQ_GPR_MANAGEMENT, 1);
++      OUT_RING(ring, 0x00040401);   /* VS=64, PS=64, REG_DYNAMIC=1 */
++   }
++
+    if (use_hw_binning(batch)) {
+       /* patch out unneeded memory exports by changing EXEC CF to EXEC_END
+        *

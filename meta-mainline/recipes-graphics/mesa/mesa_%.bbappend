@@ -40,7 +40,21 @@ SRC_URI:append = " \
     file://0045-freedreno-a2xx-fix-non-fast-clear-color-on-A22X-writ.patch \
     file://0046-freedreno-a2xx-aggressive-cache-flush-invalidate-at-.patch \
     file://0090-freedreno-a2xx-write-per-tile-VGT_CURRENT_BIN_ID-for.patch \
+    file://0093-freedreno-a2xx-Fork-C-minimum-viable-A22X-hw-binning.patch \
 "
+# 0093 (NEW): Fork C minimum-viable A22X hw binning prelude.
+# Emits per-batch in fd2_emit_tile_init: allocates 8 VSC pipe BOs,
+# writes VSC_BIN_SIZE + VSC_PIPE[0..7] config + 0xC00=1 + LRZ_VSC_CONTROL=3.
+# Builds on patch 0090's per-tile BIN_ID. Goal: keep Phase 0's cycle
+# collapse to 1 hash while removing the hang by giving the binner buffers
+# to write into. References:
+#   - leia_configure_binning_pass decomp (webos libGLESv2 @ 0x124a50)
+#   - reports/a22x-hw-binning-port-analysis.md
+# Expected outcomes:
+#   - 1 hash + correct framebuffer = Fork C succeeds (move to Fork A/B for perf)
+#   - 1 hash + tile-coverage artefacts = need two-pass rendering (Fork A/B)
+#   - hang again = missing state, add SQ_GPR_MANAGEMENT or WFI ordering
+#
 # 0092 (DROPPED - hangs GPU): LRZ_VSC_CONTROL=0x03 partial-binning experiment.
 # Result 2026-05-11: cycle DID collapse (13/13 same hash) but GPU hangs on
 # every submit, returning all-zero (alpha=0) framebuffer. Confirms the
