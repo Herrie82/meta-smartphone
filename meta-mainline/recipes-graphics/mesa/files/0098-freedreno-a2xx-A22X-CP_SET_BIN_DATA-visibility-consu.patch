@@ -1,86 +1,69 @@
-From cp_set_bin_data_v6 Mon Sep 17 00:00:00 2001
+From cp_set_bin_data_v7 Mon Sep 17 00:00:00 2001
 From: Herman van Hazendonk <github.com@herrie.org>
-Date: Tue, 12 May 2026 17:30:00 +0200
+Date: Tue, 12 May 2026 18:35:00 +0200
 Subject: [PATCH] freedreno/a2xx: A22X CP_SET_BIN_DATA visibility consume + new
- VSC regs (v6)
+ VSC regs (v7)
 
 Adds the webOS-style A22X HW binner visibility-stream consume sequence
 behind FD2_USE_BIN_DATA=1.  Default behaviour is unchanged (Test 4
 baseline) so this patch is zero-risk to ship.
 
-v6 changes (2026-05-12 after v5 on-device test):
+v7 changes (2026-05-12):
 
-  v5 made 0xC04=0 unconditional in the prelude.  Result on-device:
-    * T1 default: OK, baseline preserved.
-    * T2 FD2_USE_BIN_DATA=1: same as v3 - 40 hangchecks/10 caps,
-      d1dd210d x10.  0xC04=0 demoted v4's full-USB-drop lockup back
-      to v3's controlled hangcheck recovery (so 0xC04 IS doing
-      something useful) but did not eliminate the hang.
-    * FD2_VSC_DUMP=1 + FD2_BIN_FULL_DISENGAGE=1: full device lockup,
-      rapid-fire hangchecks, recover_worker stuck, adm-dma-engine
-      descriptor exhaustion.  v5's unconditional 0xC04=0 broke
-      double-render mode.
+  v6 had remaining state-machine perturbations leaking into the
+  default path: vsc_size_mem was allocated unconditionally and
+  VSC_SIZE_ADDRESS (0xC02) was written in the prelude every batch.
+  Result: T1 default produced a slightly drifted hash pool, and ~15
+  seconds after the test the device wedged on runtime-PM idle-suspend
+  (recover_worker stuck, full USB drop).
 
-  Fixes in v6:
+  v7 introduces a single `use_bin_data` local in fd2_emit_tile_init
+  that gates all v3+/v5/v6 binner-consume additions:
 
-  1. Gate the 0xC04=0 write behind
-     `FD2_USE_BIN_DATA || FD2_BIN_DATA_NO_VIS || FD2_BIN_FULL_DISENGAGE`.
-     Default path (no env-vars) reverts to fully untouched, same as
-     pre-0098.  FD2_VSC_DUMP=1 alone is safe again.
+    bool use_bin_data = is_a22x(ctx->screen) &&
+                        (getenv("FD2_USE_BIN_DATA") ||
+                         getenv("FD2_BIN_DATA_NO_VIS") ||
+                         getenv("FD2_BIN_FULL_DISENGAGE"));
 
-  2. Gate the full v3 disengage block (LRZ_VSC_CONTROL=0 + 0xC00=0 +
-     CACHE_FLUSH + RBBM_STATUS poll) behind the same triple-or, for
-     the same reason - default must be a no-op.
+  When false (default), the prelude is byte-identical to pre-0098:
+    * vsc_size_mem not allocated
+    * VSC_SIZE_ADDRESS register not written
+    * 0xC04 register not written
+    * No CACHE_FLUSH disengage / RBBM_STATUS wait (falls through to WFI)
+    * patch_draws stays IGNORE_VISIBILITY
+    * Per-tile renderprep emits the original VGT_CURRENT_BIN_ID writes
+      only (no CP_SET_BIN_DATA)
 
-  3. New diagnostic env-var FD2_BIN_DATA_NO_VIS that emits everything
-     FD2_USE_BIN_DATA does (full disengage, 0xC04=0, per-tile
-     SET_BIN_DATA) BUT keeps patch_draws as IGNORE_VISIBILITY.
+  When true, the full v6 path engages.
 
-     The remaining hang under FD2_USE_BIN_DATA=1 must be either in
-     SET_BIN_DATA consuming the binner output, or in the
-     USE_VISIBILITY draws filtering on that output.  NO_VIS isolates
-     the two: if NO_VIS works (no hang) while USE_BIN_DATA hangs, the
-     bug is in the visibility-filter draw path, not the SET_BIN_DATA
-     packet itself.
+Visual analysis (2026-05-12, reports/fb-captures/v6-t1-default/):
+  10 caps under v6 default revealed the period-N render cycle is
+  per-tile vertex-attribute state corruption (not coverage), with two
+  modes:
+    Mode A: whole-triangle vertex color rotation
+    Mode B: rectangular per-tile color patches aligned with the
+            binner's 384x384 tile boundaries
+  Each tile pulls its vertex-attribute snapshot from a pool of
+  internal states (likely the 8 SQ wavefront slots on A220).  Only
+  one slot holds the correct interpolant constants for the draw.
+  When all 6 visible tiles happen to pick the correct slot, we get
+  5adc3160 (clean RGB gradient).  Otherwise we get a tile mosaic.
 
-Bisect plan (v6, run on device, single build):
+  So the cycle is upstream of CP_SET_BIN_DATA itself — the binner
+  visibility consume work in 0098 is necessary infrastructure but
+  not sufficient on its own.  The SQ slot scrubbing work (patches
+  0070, 0080, 0081) remains the more direct lever.
 
-  default                                -> Test 4 baseline (no regression)
-  FD2_VSC_DUMP=1                         -> double-render dump (must be safe)
+Bisect plan (v7, run on device, single build):
+
+  default                                -> Test 4 baseline (byte-identical)
+  FD2_VSC_DUMP=1                         -> safe (must not regress)
   FD2_BIN_FULL_DISENGAGE=1               -> v3 disengage + 0xC04=0
-  FD2_BIN_DATA_NO_VIS=1                  -> v6 NEW: SET_BIN_DATA without
+  FD2_BIN_DATA_NO_VIS=1                  -> v6: SET_BIN_DATA without
                                             USE_VISIBILITY draws
-  FD2_USE_BIN_DATA=1                     -> v5: SET_BIN_DATA + USE_VISIBILITY
-                                            (still expected to hang)
+  FD2_USE_BIN_DATA=1                     -> v5: full path (may still hang)
   FD2_USE_BIN_DATA=1 FD2_BIN_WAIT=1      -> v3 behaviour (control)
   FD2_FORCE_VISIBILITY=1                 -> known-bad A20X path
-
-Per-tile sequence with FD2_USE_BIN_DATA or FD2_BIN_DATA_NO_VIS:
-
-  (optional, if FD2_BIN_WAIT)
-    CP_WAIT_REG_EQ   reg=RBBM_DEBUG mask=0x01000000 val=0x01000000 poll=1
-  CP_SET_BIN_DATA    bin_data_addr=VSC_PIPE[p].DATA_ADDRESS
-                     bin_size_addr=VSC_SIZE_ADDRESS + p*4
-
-Disengage block (v3, gated on any of the three env-vars in v6):
-
-  CP_SET_CONSTANT  A220_RB_LRZ_VSC_CONTROL = 0
-  OUT_PKT0         A220_VSC_PIPE_PARTITIONING (0xC00) = 0
-  CP_EVENT_WRITE   CACHE_FLUSH (event 6)
-  CP_WAIT_REG_EQ   RBBM_STATUS, val=0, mask=0x5f601000, poll=1
-
-VSC config block in prelude (v5, gated on any of three in v6):
-
-  OUT_PKT0  0xC02  (A220_VSC_SIZE_ADDRESS)  = size_bo iova
-  OUT_PKT0  0xC04                           = 0   (undocumented A22X
-                                                   binner state init -
-                                                   from webOS decomp)
-
-XML-side (a2xx.xml):
-  RBBM_DEBUG.A220_BINNER_DONE @ bit 24
-  A220_VSC_PIPE_PARTITIONING @ 0x0c00 (was raw 0xC00 in driver)
-  A220_VSC_SIZE_ADDRESS      @ 0x0c02
-  A220_RB_LRZ_VSC_CONTROL    bitfields (BINNER_ENABLE0/1, LRZ_CLEAR_*)
 
 Upstream-Status: Pending
 
@@ -187,7 +170,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
     struct fd_ringbuffer *ring = batch->gmem;
     struct pipe_framebuffer_state *pfb = &batch->framebuffer;
     const struct fd_gmem_stateobj *gmem = batch->gmem_state;
-@@ -747,12 +748,33 @@
+@@ -747,13 +748,46 @@
      *   FD2_SKIP_BINNING_IB    skip fd2_emit_ib(batch->binning)
      *   FD2_FORCE_VISIBILITY   re-enable patch_draws(USE_VIS) + per-tile
      *                          CP_SET_DRAW_INIT_FLAGS for A22X (WILL HANG)
@@ -218,18 +201,31 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
 -    * per-tile renderprep emits CP_SET_DRAW_INIT_FLAGS referencing
 -    * ctx->vsc_pipe_bo[tile->p], so the BOs must exist regardless of
 -    * whether the prelude runs.
-+   /* Always allocate VSC pipe BOs + the per-context VSC_SIZE BO for A22X
-+    * when use_hw_binning is active — per-tile renderprep emits
-+    * CP_SET_BIN_DATA referencing both, so they must exist regardless of
-+    * whether the prelude actually runs (FD2_SKIP_PRELUDE can disable it).
++   /* Allocate VSC pipe BOs + the per-context VSC_SIZE BO for A22X
++    * when use_hw_binning is active.  Per-tile renderprep emits
++    * CP_SET_BIN_DATA referencing both when FD2_USE_BIN_DATA /
++    * FD2_BIN_DATA_NO_VIS is set, so they must exist by then.
++    *
++    * v7: also gate the vsc_size_mem allocation behind the same env
++    * vars.  v6 default unconditionally allocated it and wrote
++    * VSC_SIZE_ADDRESS in the prelude; that perturbed the binner state
++    * enough to drift the hash pool and (after a 15 s idle) wedge the
++    * device during runtime-PM suspend.  v7 default never allocates
++    * size_mem and never touches VSC_SIZE_ADDRESS — byte-identical to
++    * pre-0098 Test 4 baseline.
      */
++   bool use_bin_data = is_a22x(ctx->screen) &&
++                       (getenv("FD2_USE_BIN_DATA") ||
++                        getenv("FD2_BIN_DATA_NO_VIS") ||
++                        getenv("FD2_BIN_FULL_DISENGAGE"));
     if (is_a22x(ctx->screen) && use_hw_binning(batch)) {
        for (int i = 0; i < 8; i++) {
-@@ -762,6 +784,14 @@
+          if (!ctx->vsc_pipe_bo[i]) {
+@@ -762,6 +796,14 @@
              assert(ctx->vsc_pipe_bo[i]);
           }
        }
-+      if (!fd2_ctx->vsc_size_mem) {
++      if (use_bin_data && !fd2_ctx->vsc_size_mem) {
 +         /* 32 bytes is enough (8 pipes × 4 bytes), but match the A3XX
 +          * 0x1000 page allocation so the BO lands on its own page and
 +          * can never share a cache line with unrelated state. */
@@ -240,7 +236,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
     }
  
     if (is_a22x(ctx->screen) && !getenv("FD2_SKIP_PRELUDE")) {
-@@ -830,6 +860,48 @@
+@@ -830,6 +872,53 @@
        OUT_RING(ring, A2XX_A220_VSC_BIN_SIZE_WIDTH(gmem->bin_w) |
                       A2XX_A220_VSC_BIN_SIZE_HEIGHT(gmem->bin_h));
  
@@ -260,8 +256,14 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
 +       * range at context start, but mainline drm/msm a2xx doesn't, so
 +       * 0xC04 holds stale state and CP_SET_BIN_DATA later trips on it.
 +       */
-+      OUT_PKT0(ring, REG_A2XX_A220_VSC_SIZE_ADDRESS, 1);
-+      OUT_RELOC(ring, fd2_ctx->vsc_size_mem, 0, 0, 0);
++      /* v7: gate the VSC_SIZE_ADDRESS write behind the same env-vars
++       * that gate the rest of the binner-consume work.  Default path
++       * never writes this register — pre-0098 baseline restored.
++       */
++      if (use_bin_data) {
++         OUT_PKT0(ring, REG_A2XX_A220_VSC_SIZE_ADDRESS, 1);
++         OUT_RELOC(ring, fd2_ctx->vsc_size_mem, 0, 0, 0);
++      }
 +
 +      /* v5: undocumented A22X-only binner control register @ 0xC04.
 +       * webOS writes 0 here once per renderpass.  Without this, the
@@ -280,8 +282,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
 +       * Default path (no env vars) must remain a no-op vs pre-0098
 +       * behaviour.
 +       */
-+      if (getenv("FD2_USE_BIN_DATA") || getenv("FD2_BIN_DATA_NO_VIS") ||
-+          getenv("FD2_BIN_FULL_DISENGAGE")) {
++      if (use_bin_data) {
 +         OUT_PKT0(ring, 0x0c04, 1);
 +         OUT_RING(ring, 0x00000000);
 +      }
@@ -289,7 +290,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
        /* VSC_PIPE[0..7]: 24 consecutive regs at 0xC06 (CONFIG, ADDRESS, LENGTH)
         * CONFIG encoding from webOS decomp: (h<<24)|(w<<20)|(y<<10)|x.
         * Bit layout independently verified against documented A3XX
-@@ -867,12 +939,13 @@
+@@ -867,12 +956,13 @@
        OUT_RING(ring, 0x00000000);
        OUT_WFI(ring);
  
@@ -308,7 +309,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
  
        /* Engage the binner: A220_RB_LRZ_VSC_CONTROL = 3 (webOS value).
         * WFI follows immediately after, per webOS ordering — earlier v2
-@@ -919,21 +992,37 @@
+@@ -919,21 +1009,37 @@
     }
  
     if (use_hw_binning(batch)) {
@@ -359,7 +360,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
  
        if (is_a20x(ctx->screen)) {
           /* A20X hw binning: shader-memexport mechanism.
-@@ -1062,11 +1151,53 @@
+@@ -1062,11 +1168,52 @@
            * Subsequent per-tile rendering uses the visibility data the
            * binner wrote to VSC_PIPE BOs, but the binner itself should
            * not be re-engaged for render-pass draws.
@@ -385,8 +386,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
           OUT_RING(ring, 0x00000000);
 -         OUT_WFI(ring);
 +
-+         if (getenv("FD2_BIN_FULL_DISENGAGE") || getenv("FD2_USE_BIN_DATA") ||
-+             getenv("FD2_BIN_DATA_NO_VIS")) {
++         if (use_bin_data) {
 +            /* (2) Master disengage of the A220 binner module. */
 +            OUT_PKT0(ring, REG_A2XX_A220_VSC_PIPE_PARTITIONING, 1);
 +            OUT_RING(ring, 0);
@@ -414,7 +414,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
  
           /* DIAGNOSTIC: marker 6 = disengage complete */
           OUT_PKT0(ring, REG_AXXX_CP_SCRATCH_REG5, 1);
-@@ -1163,11 +1294,57 @@
+@@ -1163,11 +1310,57 @@
        OUT_RING(ring, CP_REG(REG_A2XX_VGT_CURRENT_BIN_ID_MAX));
        OUT_RING(ring, tile->n);
  
