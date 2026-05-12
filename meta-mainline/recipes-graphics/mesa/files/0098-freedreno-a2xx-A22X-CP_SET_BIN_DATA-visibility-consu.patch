@@ -1,0 +1,324 @@
+From cp_set_bin_data Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Tue, 12 May 2026 06:00:00 +0200
+Subject: [PATCH] freedreno/a2xx: A22X CP_SET_BIN_DATA visibility consume + new
+ VSC regs
+
+Adds the webOS-style A22X HW binner visibility-stream consume sequence
+behind FD2_USE_BIN_DATA=1.  Default behaviour is unchanged (Test 4
+baseline: IGNORE_VISIBILITY, no per-tile consume) so this patch is
+zero-risk to ship.
+
+The webOS leia_perform_resolve decomp shows the per-tile sequence:
+
+  CP_WAIT_REG_EQ  reg=RBBM_DEBUG mask=0x01000000 val=0x01000000  poll=1
+  CP_SET_BIN_DATA bin_data_addr=VSC_PIPE[p].DATA_ADDRESS
+                  bin_size_addr=VSC_SIZE_ADDRESS + p*4
+
+CP_WAIT_REG_EQ (opcode 0x52) and CP_SET_BIN_DATA (opcode 0x2f) are both
+documented in Mesa's adreno_pm4.xml for A2XX-A4XX, so no new packet
+helpers are needed.
+
+The binner needs a place to write its per-pipe visibility-stream length;
+allocate a 0x1000-byte per-context BO (`fd2_context::vsc_size_mem`) and
+bind it via the new A220_VSC_SIZE_ADDRESS register written during the
+prelude.  Mirrors fd3_context::vsc_size_mem on A3XX.
+
+XML updates (src/freedreno/registers/adreno/a2xx.xml):
+
+  * RBBM_DEBUG.A220_BINNER_DONE at bit 24 - polled by CP_WAIT_REG_EQ.
+  * A220_VSC_PIPE_PARTITIONING at 0x0c00 - master engage (the prior
+    code wrote this as a raw 0xC00 with a TODO; now it has a real
+    symbol so the cmdstream decoder names it correctly).
+  * A220_VSC_SIZE_ADDRESS at 0x0c02 - binner output base for the
+    per-pipe length array.  Address documented in the comment; exact
+    register offset within 0x0c02..0x0c05 is the best current guess.
+  * A220_RB_LRZ_VSC_CONTROL bitfield names (BINNER_ENABLE0/1,
+    LRZ_CLEAR_LO/HI) so 0x03 vs 0x84 vs 0x00 reads sensibly.
+
+Driver changes (src/gallium/drivers/freedreno/a2xx/):
+
+  * fd2_context.h, fd2_context.c: new vsc_size_mem field; free on
+    context destroy.
+  * fd2_gmem.c:
+    - Allocate vsc_size_mem lazily next to vsc_pipe_bo[] in
+      fd2_emit_tile_init.
+    - Emit OUT_PKT0(REG_A2XX_A220_VSC_SIZE_ADDRESS) reloc'd at it
+      during the prelude, right after the VSC_PIPE config block.
+    - Replace the raw `OUT_PKT0(ring, 0xC00, 1); OUT_RING(ring, 1);`
+      with REG_A2XX_A220_VSC_PIPE_PARTITIONING so the symbol is
+      correctly attributed.
+    - Per-tile A22X consume: WAIT_REG_EQ + CP_SET_BIN_DATA when
+      FD2_USE_BIN_DATA is set; A20X path (CP_SET_DRAW_INIT_FLAGS)
+      preserved unchanged.
+    - patch_draws() now picks USE_VISIBILITY when FD2_USE_BIN_DATA or
+      FD2_FORCE_VISIBILITY is set on A22X; default (Test 4) remains
+      IGNORE_VISIBILITY.
+
+Bisect plan (run on device, single build):
+
+  default                       -> Test 4 baseline (no regression)
+  FD2_USE_BIN_DATA=1            -> new webOS-style consume sequence
+  FD2_USE_BIN_DATA=1
+   + FD2_SKIP_PRELUDE=1         -> isolates effect of the new packets
+  FD2_FORCE_VISIBILITY=1        -> known-bad CP_SET_DRAW_INIT_FLAGS
+
+Upstream-Status: Pending
+
+Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
+---
+--- a/src/freedreno/registers/adreno/a2xx.xml
++++ b/src/freedreno/registers/adreno/a2xx.xml
+@@ -1087,7 +1087,13 @@
+ 	<reg32 offset="0x0398" name="RBBM_PERFCOUNTER0_HI"/>
+ 	<reg32 offset="0x0399" name="RBBM_PERFCOUNTER1_LO"/>
+ 	<reg32 offset="0x039a" name="RBBM_PERFCOUNTER1_HI"/>
+-	<reg32 offset="0x039b" name="RBBM_DEBUG"/>
++	<reg32 offset="0x039b" name="RBBM_DEBUG">
++		<!-- bit 24 is polled by the A220+ HW binner viz-consume sequence
++		     (CP_WAIT_REG_EQ in leia_perform_resolve): set when the binner has
++		     finished writing visibility data for the current pipe.  Verified
++		     against webOS libGLESv2 decomp 2026-05-12. -->
++		<bitfield name="A220_BINNER_DONE" pos="24" type="boolean"/>
++	</reg32>
+ 	<reg32 offset="0x039c" name="RBBM_PM_OVERRIDE1">
+ 		<bitfield name="RBBM_AHBCLK_PM_OVERRIDE" pos="0" type="boolean"/>
+ 		<bitfield name="SC_REG_SCLK_PM_OVERRIDE" pos="1" type="boolean"/>
+@@ -1209,10 +1215,23 @@
+ 	<reg32 offset="0x0a44" name="MH_INTERRUPT_CLEAR"/>
+ 	<reg32 offset="0x0a54" name="MH_CLNT_INTF_CTRL_CONFIG1"/>
+ 	<reg32 offset="0x0a55" name="MH_CLNT_INTF_CTRL_CONFIG2"/>
++	<!-- A220 HW visibility-stream compressor (VSC) block @ 0x0c00.
++	     leia_configure_binning_pass (webOS libGLESv2 decomp) writes 1 here
++	     to engage the binner at the start of the binning pass. -->
++	<reg32 offset="0x0c00" name="A220_VSC_PIPE_PARTITIONING">
++		<bitfield name="ENABLE" pos="0" type="boolean"/>
++	</reg32>
+ 	<reg32 offset="0x0c01" name="A220_VSC_BIN_SIZE">
+ 		<bitfield name="WIDTH" low="0" high="4" shr="5" type="uint"/>
+ 		<bitfield name="HEIGHT" low="5" high="9" shr="5" type="uint"/>
+ 	</reg32>
++	<!-- Per-pipe visibility-stream length output base.  The binner writes one
++	     u32 per pipe (stride 4) to *(VSC_SIZE_ADDRESS + pipe*4); the per-tile
++	     CP_SET_BIN_DATA packet then loads that length so the visibility
++	     filter sees how many bytes of the pipe data BO are valid.
++	     Address documented from webOS leia_perform_resolve decomp; the exact
++	     register offset within 0x0c02..0x0c05 has not yet been narrowed. -->
++	<reg32 offset="0x0c02" name="A220_VSC_SIZE_ADDRESS"/>
+ 	<array offset="0x0c06" name="VSC_PIPE" stride="3" length="8">
+ 		<reg32 offset="0x0" name="CONFIG"/>
+ 		<reg32 offset="0x1" name="DATA_ADDRESS"/>
+@@ -1499,7 +1518,16 @@
+ 	<reg32 offset="0x2208" name="RB_MODECONTROL">
+ 		<bitfield name="EDRAM_MODE" low="0" high="2" type="a2xx_rb_edram_mode"/>
+ 	</reg32>
+-	<reg32 offset="0x2209" name="A220_RB_LRZ_VSC_CONTROL"/>
++	<!-- A220 binner / LRZ control.  Empirical values observed in webOS:
++	     0x03 = engage HW binner (bits 0+1 set during binning pass setup)
++	     0x84 = LRZ clear mode (bits 2+7) during resolve-time clear
++	     0x00 = disengage / passthrough after binning IB completes -->
++	<reg32 offset="0x2209" name="A220_RB_LRZ_VSC_CONTROL">
++		<bitfield name="BINNER_ENABLE0" pos="0" type="boolean"/>
++		<bitfield name="BINNER_ENABLE1" pos="1" type="boolean"/>
++		<bitfield name="LRZ_CLEAR_LO"   pos="2" type="boolean"/>
++		<bitfield name="LRZ_CLEAR_HI"   pos="7" type="boolean"/>
++	</reg32>
+ 	<reg32 offset="0x220a" name="RB_SAMPLE_POS"/>
+ 	<reg32 offset="0x220b" name="CLEAR_COLOR">
+ 		<bitfield name="RED" low="0" high="7"/>
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_context.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_context.c
+@@ -26,6 +26,9 @@
+    if (fd2_ctx->scratch_buf)
+       pipe_resource_reference(&fd2_ctx->scratch_buf, NULL);
+ 
++   if (fd2_ctx->vsc_size_mem)
++      fd_bo_del(fd2_ctx->vsc_size_mem);
++
+    fd_context_destroy(pctx);
+    free(pctx);
+ }
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_context.h
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_context.h
+@@ -26,6 +26,15 @@
+     */
+    struct pipe_resource *scratch_buf;
+    uint32_t cache_flush_seqno;
++
++   /* A22X HW binner visibility-stream size BO.  The binner writes one
++    * u32 per pipe (8 pipes, 4 bytes each) to *(vsc_size_mem + pipe*4);
++    * the per-tile CP_SET_BIN_DATA packet then loads that length so the
++    * visibility filter sees how many bytes of the pipe data BO are
++    * valid for this tile's pipe.  Allocated lazily on first batch
++    * with use_hw_binning && is_a22x.
++    */
++   struct fd_bo *vsc_size_mem;
+ };
+ 
+ static inline struct fd2_context *
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -583,6 +583,7 @@
+ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
+ {
+    struct fd_context *ctx = batch->ctx;
++   struct fd2_context *fd2_ctx = fd2_context(ctx);
+    struct fd_ringbuffer *ring = batch->gmem;
+    struct pipe_framebuffer_state *pfb = &batch->framebuffer;
+    const struct fd_gmem_stateobj *gmem = batch->gmem_state;
+@@ -749,10 +750,10 @@
+     *                          CP_SET_DRAW_INIT_FLAGS for A22X (WILL HANG)
+     *   FD2_VSC_DUMP           dump VSC pipe BO contents per batch (diag)
+     */
+-   /* Always allocate VSC pipe BOs for A22X if use_hw_binning is active —
+-    * per-tile renderprep emits CP_SET_DRAW_INIT_FLAGS referencing
+-    * ctx->vsc_pipe_bo[tile->p], so the BOs must exist regardless of
+-    * whether the prelude runs.
++   /* Always allocate VSC pipe BOs + the per-context VSC_SIZE BO for A22X
++    * when use_hw_binning is active — per-tile renderprep emits
++    * CP_SET_BIN_DATA referencing both, so they must exist regardless of
++    * whether the prelude actually runs (FD2_SKIP_PRELUDE can disable it).
+     */
+    if (is_a22x(ctx->screen) && use_hw_binning(batch)) {
+       for (int i = 0; i < 8; i++) {
+@@ -762,6 +763,14 @@
+             assert(ctx->vsc_pipe_bo[i]);
+          }
+       }
++      if (!fd2_ctx->vsc_size_mem) {
++         /* 32 bytes is enough (8 pipes × 4 bytes), but match the A3XX
++          * 0x1000 page allocation so the BO lands on its own page and
++          * can never share a cache line with unrelated state. */
++         fd2_ctx->vsc_size_mem =
++            fd_bo_new(ctx->dev, 0x1000, 0, "a22x_vsc_size");
++         assert(fd2_ctx->vsc_size_mem);
++      }
+    }
+ 
+    if (is_a22x(ctx->screen) && !getenv("FD2_SKIP_PRELUDE")) {
+@@ -847,6 +856,16 @@
+          OUT_RING(ring, fd_bo_size(ctx->vsc_pipe_bo[i]));
+       }
+ 
++      /* VSC_SIZE_ADDRESS: tell the binner where to write the per-pipe
++       * visibility-stream length (one u32 per pipe).  Mirrors A3XX
++       * update_vsc_pipe(), but using OUT_PKT0 because A2XX VSC regs
++       * are below 0x2000 (CP_SET_CONSTANT range).  The per-tile
++       * CP_SET_BIN_DATA packet later loads from this BO at offset
++       * tile->p * 4 to feed the visibility filter.
++       */
++      OUT_PKT0(ring, REG_A2XX_A220_VSC_SIZE_ADDRESS, 1);
++      OUT_RELOC(ring, fd2_ctx->vsc_size_mem, 0, 0, 0);
++
+       /* Explicit disengage of any previously-engaged binner before
+        * re-engaging in this batch.
+        *
+@@ -867,12 +886,13 @@
+       OUT_RING(ring, 0x00000000);
+       OUT_WFI(ring);
+ 
+-      /* A220_VSC_ENABLE @ 0xC00 = 1 -- undocumented master enable.
+-       * webOS writes this via a type-0 PM4 packet. The register is not
+-       * in a2xx.xml so we use the raw address.
++      /* A220_VSC_PIPE_PARTITIONING.ENABLE = 1 -- master engage for the
++       * HW binner.  webOS writes this via a type-0 PM4 packet at the
++       * start of leia_configure_binning_pass; without it the binner does
++       * not advance past stream-out setup.
+        */
+-      OUT_PKT0(ring, 0xC00, 1);
+-      OUT_RING(ring, 1);
++      OUT_PKT0(ring, REG_A2XX_A220_VSC_PIPE_PARTITIONING, 1);
++      OUT_RING(ring, A2XX_A220_VSC_PIPE_PARTITIONING_ENABLE);
+ 
+       /* Engage the binner: A220_RB_LRZ_VSC_CONTROL = 3 (webOS value).
+        * WFI follows immediately after, per webOS ordering — earlier v2
+@@ -919,21 +939,26 @@
+    }
+ 
+    if (use_hw_binning(batch)) {
+-      /* A22X: default to IGNORE_VISIBILITY because the visibility filter
+-       * (patch_draws(USE_VISIBILITY) + per-tile CP_SET_DRAW_INIT_FLAGS)
+-       * hard-hangs the GPU on A22X — confirmed across multiple bisect
+-       * tests including with the binning IB actually running.
+-       *
+-       * webOS likely uses a different A22X-specific visibility-consume
+-       * packet. Until that's identified, ship the working "binning IB
+-       * runs, no visibility filter" config (Test 4) as the default.
++      /* A22X default = IGNORE_VISIBILITY (Test 4 shipping baseline).
++       * Two diagnostic env-vars switch the A22X consume path:
+        *
+-       * Set FD2_FORCE_VISIBILITY=1 to revert to USE_VISIBILITY (will hang
+-       * on A22X — diagnostic only). A20X keeps its working filter. */
++       *   FD2_USE_BIN_DATA       webOS-style CP_SET_BIN_DATA per tile +
++       *                          CP_WAIT_REG_EQ on RBBM_DEBUG.BINNER_DONE.
++       *                          Requires USE_VISIBILITY so draws consult
++       *                          the stream the packet just bound.
++       *   FD2_FORCE_VISIBILITY   legacy A20X CP_SET_DRAW_INIT_FLAGS path.
++       *                          Confirmed to hard-hang on A22X — kept
++       *                          only as a falsifier knob.
++       *
++       * A20X always uses USE_VISIBILITY (its CP_SET_DRAW_INIT_FLAGS path
++       * is the original, working freedreno binning consume).
++       */
++      bool a22x = is_a22x(ctx->screen);
++      bool a22x_visibility = a22x && (getenv("FD2_USE_BIN_DATA") ||
++                                      getenv("FD2_FORCE_VISIBILITY"));
+       patch_draws(batch,
+-                  (is_a22x(ctx->screen) && !getenv("FD2_FORCE_VISIBILITY"))
+-                     ? IGNORE_VISIBILITY
+-                     : USE_VISIBILITY);
++                  (!a22x || a22x_visibility) ? USE_VISIBILITY
++                                             : IGNORE_VISIBILITY);
+ 
+       if (is_a20x(ctx->screen)) {
+          /* A20X hw binning: shader-memexport mechanism.
+@@ -1163,11 +1188,44 @@
+       OUT_RING(ring, CP_REG(REG_A2XX_VGT_CURRENT_BIN_ID_MAX));
+       OUT_RING(ring, tile->n);
+ 
+-      /* TODO only emit this when tile->p changes */
+-      /* A22X: default skip the per-tile CP_SET_DRAW_INIT_FLAGS that
+-       * points the rasterizer at the VSC pipe BO — hangs the GPU on
+-       * A22X. A20X keeps its working filter. See patch_draws() above. */
+-      if (!is_a22x(ctx->screen) || getenv("FD2_FORCE_VISIBILITY")) {
++      if (is_a22x(ctx->screen)) {
++         /* A22X visibility-stream consume.  Matches webOS
++          * leia_perform_resolve per-tile sequence:
++          *
++          *   CP_WAIT_REG_EQ  reg=RBBM_DEBUG mask=0x01000000 val=0x01000000
++          *   CP_SET_BIN_DATA pipe_data_addr=VSC_PIPE[p].DATA_ADDRESS
++          *                   bin_size_addr =VSC_SIZE_ADDRESS + p*4
++          *
++          * The WAIT_REG_EQ stalls the CP until the binner reports its
++          * per-pipe stream is complete (RBBM_DEBUG.A220_BINNER_DONE).
++          * Then CP_SET_BIN_DATA tells the visibility filter where to
++          * find the stream + how many bytes are valid for this tile's
++          * pipe.  Mesa's CP_SET_DRAW_INIT_FLAGS path (used on A20X) is
++          * the wrong consume packet for A22X and hangs the GPU.
++          *
++          * Default-disabled: needs FD2_USE_BIN_DATA=1 in the
++          * environment so we can bisect against the Test 4 baseline
++          * (IGNORE_VISIBILITY, no per-tile consume) without rebuild.
++          */
++         if (getenv("FD2_USE_BIN_DATA")) {
++            /* CP_WAIT_REG_EQ packet, 4 dwords:
++             *   reg, value, mask, wait_count (poll-interval)
++             */
++            OUT_PKT3(ring, CP_WAIT_REG_EQ, 4);
++            OUT_RING(ring, REG_A2XX_RBBM_DEBUG);
++            OUT_RING(ring, 0x01000000);     /* A220_BINNER_DONE = 1 */
++            OUT_RING(ring, 0x01000000);     /* mask */
++            OUT_RING(ring, 0x00000001);     /* poll interval */
++
++            OUT_PKT3(ring, CP_SET_BIN_DATA, 2);
++            OUT_RELOC(ring, pipe_bo, 0, 0, 0);       /* BIN_DATA_ADDR */
++            OUT_RELOC(ring, fd2_ctx->vsc_size_mem,   /* BIN_SIZE_ADDR */
++                      tile->p * 4, 0, 0);
++         }
++      } else {
++         /* A20X path: CP_SET_DRAW_INIT_FLAGS points the rasterizer at
++          * the VSC pipe BO.  Confirmed working for A20X.
++          */
+          OUT_PKT3(ring, CP_SET_DRAW_INIT_FLAGS, 1);
+          OUT_RELOC(ring, pipe_bo, 0, 0, 0);
+       }

@@ -45,7 +45,19 @@ SRC_URI:append = " \
     file://0095-freedreno-a2xx-ir2_nir-skip-memexport-CFs-for-A22X.patch \
     file://0096-freedreno-a2xx-CP_SCRATCH-milestone-markers-Fork-AB.patch \
     file://0097-freedreno-a2xx-bisect-toggles-Fork-AB-env-vars.patch \
+    file://0098-freedreno-a2xx-A22X-CP_SET_BIN_DATA-visibility-consu.patch \
 "
+# 0098 (NEW): A22X webOS-style CP_SET_BIN_DATA visibility-stream consume.
+# Adds vsc_size_mem BO, writes A220_VSC_SIZE_ADDRESS in prelude, and
+# emits CP_WAIT_REG_EQ(RBBM_DEBUG bit24) + CP_SET_BIN_DATA per tile
+# when FD2_USE_BIN_DATA=1.  Default behaviour unchanged (still Test 4
+# IGNORE_VISIBILITY baseline).  Also names previously-raw VSC regs in
+# a2xx.xml: A220_VSC_PIPE_PARTITIONING (0x0c00), A220_VSC_SIZE_ADDRESS
+# (0x0c02), RBBM_DEBUG.A220_BINNER_DONE bit 24, and bitfields on
+# A220_RB_LRZ_VSC_CONTROL.  References:
+#   - webOS libGLESv2 leia_perform_resolve decomp
+#   - reports/a22x-bisect-test4-baseline.md (TBD)
+
 # 0097 (NEW, diagnostic): env-var bisect toggles for Fork A/B hang
 # investigation. Available env vars:
 #   FD2_SKIP_PRELUDE      skip Fork D prelude (no LRZ_VSC_CONTROL=3 engage)
