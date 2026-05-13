@@ -51,6 +51,7 @@ SRC_URI:append = " \
     file://0015-freedreno-a2xx-three-env-gated-bisects-for-0x0ee2-cy.patch \
     file://0016-freedreno-A22X-per-draw-DEALLOC-bisect-Gemini-round-.patch \
     file://0017-freedreno-a2xx-A22X-inline-TC_CNTL_STATUS-L2_INVALID.patch \
+    file://0018-freedreno-a2xx-split-A22X-binning-IB-into-separate-M.patch \
 "
 # 0098 (NEW): A22X webOS-style CP_SET_BIN_DATA visibility-stream consume.
 # Adds vsc_size_mem BO, writes A220_VSC_SIZE_ADDRESS in prelude, and
