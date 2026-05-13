@@ -53,6 +53,7 @@ SRC_URI:append = " \
     file://0017-freedreno-a2xx-A22X-inline-TC_CNTL_STATUS-L2_INVALID.patch \
     file://0018-freedreno-a2xx-split-A22X-binning-IB-into-separate-M.patch \
     file://0019-freedreno-a2xx-emit-CP_REG_TO_MEM-for-VSC_PIPE-regs-.patch \
+    file://0020-freedreno-a2xx-VSC-reg-save-also-testable-at-START-o.patch \
 "
 # 0098 (NEW): A22X webOS-style CP_SET_BIN_DATA visibility-stream consume.
 # Adds vsc_size_mem BO, writes A220_VSC_SIZE_ADDRESS in prelude, and
