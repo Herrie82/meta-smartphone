@@ -46,6 +46,7 @@ SRC_URI:append = " \
     file://0096-freedreno-a2xx-CP_SCRATCH-milestone-markers-Fork-AB.patch \
     file://0097-freedreno-a2xx-bisect-toggles-Fork-AB-env-vars.patch \
     file://0098-freedreno-a2xx-A22X-CP_SET_BIN_DATA-visibility-consu.patch \
+    file://0099-freedreno-a2xx-A22X-per-IB-cycle-counter-NOP-padding.patch \
 "
 # 0098 (NEW): A22X webOS-style CP_SET_BIN_DATA visibility-stream consume.
 # Adds vsc_size_mem BO, writes A220_VSC_SIZE_ADDRESS in prelude, and
