@@ -1,4 +1,4 @@
-From c269e441c607d84ef857580d97b5c81a6fe0a490 Mon Sep 17 00:00:00 2001
+From 73283ff102c8be87213ebac0bb2b35b3bd03464b Mon Sep 17 00:00:00 2001
 From: Herman van Hazendonk <github.com@herrie.org>
 Date: Wed, 13 May 2026 14:22:42 +0200
 Subject: [PATCH] freedreno/a2xx: emit end-of-tile-loop CP_EVENT_WRITE
@@ -49,14 +49,14 @@ Upstream-Status: Pending
 
 Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
 ---
- src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 50 +++++++++++++++++++
- 1 file changed, 50 insertions(+)
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 65 +++++++++++++++++++
+ 1 file changed, 65 insertions(+)
 
 diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
-index 2db72d06841..7cd21908216 100644
+index 2db72d06841..3647885dbe3 100644
 --- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
 +++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
-@@ -578,6 +578,55 @@ fd2_emit_sysmem_prep(struct fd_batch *batch)
+@@ -578,6 +578,70 @@ fd2_emit_sysmem_prep(struct fd_batch *batch)
     fd_context_all_dirty(ctx);
  }
  
@@ -101,18 +101,33 @@ index 2db72d06841..7cd21908216 100644
 +      OUT_RING(ring, 0x1c);  /* FACENESS_FLUSH */
 +   }
 +
-+   if (getenv("FD2_END_DEALLOC")) {
-+      OUT_PKT3(ring, CP_EVENT_WRITE, 1);
-+      OUT_RING(ring, 0x00);  /* VS_DEALLOC */
-+      OUT_PKT3(ring, CP_EVENT_WRITE, 1);
-+      OUT_RING(ring, 0x01);  /* PS_DEALLOC */
++   /* FD2_END_DEALLOC=N emits N pairs of VS_DEALLOC + PS_DEALLOC.
++    *
++    * Round-3 test showed N=1 (single pair) shifts the period-16 cycle
++    * by exactly 1 cap (5adc3160 moves cap 1 -> cap 2).  Gemini round-4
++    * hypothesis: each render consumes 2 slots (binning draw + render
++    * draw), so we need N=2 to pin the cycle.  Test by setting
++    * FD2_END_DEALLOC=2 (or higher to verify saturation).
++    * FD2_END_DEALLOC=1 keeps the prior single-pair behaviour for
++    * direct comparison.
++    */
++   const char *dealloc_env = getenv("FD2_END_DEALLOC");
++   if (dealloc_env) {
++      int n = atoi(dealloc_env);
++      if (n <= 0) n = 1;
++      for (int i = 0; i < n; i++) {
++         OUT_PKT3(ring, CP_EVENT_WRITE, 1);
++         OUT_RING(ring, 0x00);  /* VS_DEALLOC */
++         OUT_PKT3(ring, CP_EVENT_WRITE, 1);
++         OUT_RING(ring, 0x01);  /* PS_DEALLOC */
++      }
 +   }
 +}
 +
  /* before first tile */
  static void
  fd2_emit_tile_init(struct fd_batch *batch) assert_dt
-@@ -1453,4 +1502,5 @@ fd2_gmem_init(struct pipe_context *pctx) disable_thread_safety_analysis
+@@ -1453,4 +1517,5 @@ fd2_gmem_init(struct pipe_context *pctx) disable_thread_safety_analysis
     ctx->emit_tile_mem2gmem = fd2_emit_tile_mem2gmem;
     ctx->emit_tile_renderprep = fd2_emit_tile_renderprep;
     ctx->emit_tile_gmem2mem = fd2_emit_tile_gmem2mem;
