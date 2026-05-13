@@ -1,0 +1,149 @@
+From 12d6bc2152bfbb690b7fb1af1928b565952bfbc8 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Wed, 13 May 2026 19:46:29 +0200
+Subject: [PATCH] freedreno/a2xx: emit CP_REG_TO_MEM for VSC_PIPE regs at
+ submit end (KGSL parity)
+
+Legacy KGSL kernel (kgsl_drawctxt.c::build_reg_save_cmds) emits a
+PM4_REG_TO_MEM sequence for the LEIA_REV470 VSC_PIPE register range
+between every user IB as part of context-switch save.  The CP's
+execution of these REG_TO_MEM packets has the side-effect of
+advancing the binner state machine through 0x7f-namespace transitions
+in register 0x0ee2 - transitions that mainline Mesa never produces.
+
+Captured webos diag data (reports/webos-ib-decode-2026-05-13.md)
+showed webOS's 0x0ee2 traces visit 0x7f/0x29/0x6b/0x3d namespaces
+that mainline only ever sees the 0x15-namespace of, producing the
+period-16 cycle of corrupt frames.
+
+This patch emits the SAME CP_REG_TO_MEM packets at end of tile loop
+on A22X (gated on FD2_EMIT_VSC_REG_SAVE=1).  Range matches KGSL:
+  VSC_BIN_SIZE (0x0c01)
+  + per-pipe VSC_PIPE_CONFIG/DATA_ADDRESS/DATA_LENGTH (0x0c06..0x0c1d)
+= 25 CP_REG_TO_MEM packets = 75 extra dwords per batch.
+
+Target memory: new fd2_ctx->vsc_regsave_mem (256-byte scratch BO,
+allocated lazily on first use, freed in fd2_context_destroy).
+
+Test plan:
+  FD2_EMIT_VSC_REG_SAVE=1 FD2_FLUSH_MULTIPLIER=1 cap-binary
+  expect: 0x0ee2 progression visits 0x7f-namespace; cycle phase
+  reorders or pins to 5adc3160.
+
+If pinned -> matches KGSL behaviour, structural fix found.
+If unchanged -> the trigger is elsewhere in KGSL's context-switch
+   sequence (shader_save/restore, gmem_save) -> port those too.
+
+Upstream-Status: Pending
+
+Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
+---
+ .../drivers/freedreno/a2xx/fd2_context.c      |  3 ++
+ .../drivers/freedreno/a2xx/fd2_context.h      | 13 +++++
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 52 +++++++++++++++++++
+ 3 files changed, 68 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_context.c b/src/gallium/drivers/freedreno/a2xx/fd2_context.c
+index 8ba4b150fb2..31133d98fad 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_context.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_context.c
+@@ -25,6 +25,9 @@ fd2_context_destroy(struct pipe_context *pctx) in_dt
+    if (fd2_ctx->vsc_size_mem)
+       fd_bo_del(fd2_ctx->vsc_size_mem);
+ 
++   if (fd2_ctx->vsc_regsave_mem)
++      fd_bo_del(fd2_ctx->vsc_regsave_mem);
++
+    fd_context_destroy(pctx);
+    free(pctx);
+ }
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_context.h b/src/gallium/drivers/freedreno/a2xx/fd2_context.h
+index f5509899e3a..04875cc9c6d 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_context.h
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_context.h
+@@ -27,6 +27,19 @@ struct fd2_context {
+     * with use_hw_binning && is_a22x.
+     */
+    struct fd_bo *vsc_size_mem;
++
++   /* Scratch BO for CP_REG_TO_MEM emission of VSC registers at submit
++    * end - mirrors legacy KGSL's build_reg_save_cmds A22X (Leia) path:
++    *   if (chip_id == LEIA_REV470)
++    *       for reg in REG_LEIA_VSC_BIN_SIZE..REG_LEIA_VSC_PIPE_DATA_LENGTH_7
++    *           emit PM4_REG_TO_MEM(reg, ctx->reg_values[j])
++    * KGSL emits these REG_TO_MEM packets BETWEEN every user IB as
++    * part of context-switch save.  The CP's execution of REG_TO_MEM
++    * side-effects the binner state machine and drives 0x0ee2 through
++    * 0x7f-namespace transitions that mainline Mesa never produces.
++    * Gated on FD2_EMIT_VSC_REG_SAVE=1.
++    */
++   struct fd_bo *vsc_regsave_mem;
+ };
+ 
+ static inline struct fd2_context *
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+index 78440834fb8..7a69ff87d14 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -684,6 +684,58 @@ fd2_emit_tile_fini(struct fd_batch *batch) assert_dt
+          OUT_RING(ring, A2XX_TC_CNTL_STATUS_L2_INVALIDATE);
+       }
+    }
++
++   /* FD2_EMIT_VSC_REG_SAVE=1: emit CP_REG_TO_MEM packets for VSC_PIPE
++    * registers at end of tile loop, mirroring legacy KGSL's
++    * build_reg_save_cmds A22X path (kgsl_drawctxt.c lines 620-630):
++    *
++    *   if (chip_id == LEIA_REV470) {
++    *       for (i = REG_LEIA_VSC_BIN_SIZE; i <= REG_LEIA_VSC_PIPE_DATA_LENGTH_7; i++) {
++    *           *cmd++ = pm4_type3_packet(PM4_REG_TO_MEM, 2);
++    *           *cmd++ = i;
++    *           *cmd++ = ctx->reg_values[j++];
++    *       }
++    *   }
++    *
++    * KGSL emits these REG_TO_MEM packets BETWEEN every user IB as part
++    * of context-switch save.  The CP's execution of REG_TO_MEM has the
++    * side effect of advancing the binner state machine through
++    * 0x7f-namespace transitions in 0x0ee2 that mainline Mesa never
++    * produces - and is the most likely cause of the period-16 cycle.
++    *
++    * Range emitted: VSC_BIN_SIZE (0x0c01) + per-pipe CONFIG/DATA_ADDR/
++    * DATA_LEN for 8 pipes (0x0c06..0x0c1d) = 25 register reads total.
++    *
++    * Cost: 25 CP_REG_TO_MEM packets * 3 dwords = 75 extra dwords per
++    * batch.  Scratch BO (vsc_regsave_mem) is allocated lazily on first
++    * use and reused for all subsequent batches - no per-batch malloc.
++    */
++   if (is_a22x(ctx->screen) && getenv("FD2_EMIT_VSC_REG_SAVE")) {
++      struct fd2_context *fd2_ctx = fd2_context(ctx);
++      if (!fd2_ctx->vsc_regsave_mem) {
++         fd2_ctx->vsc_regsave_mem = fd_bo_new(
++            ctx->screen->dev, 256, 0, "vsc_regsave");
++      }
++      if (fd2_ctx->vsc_regsave_mem) {
++         /* VSC_BIN_SIZE @ 0x0c01 -> offset 0 */
++         OUT_PKT3(ring, CP_REG_TO_MEM, 2);
++         OUT_RING(ring, REG_A2XX_A220_VSC_BIN_SIZE);
++         OUT_RELOC(ring, fd2_ctx->vsc_regsave_mem, 0, 0, 0);
++         /* Per-pipe VSC_PIPE_CONFIG / DATA_ADDRESS / DATA_LENGTH
++          * @ 0x0c06..0x0c1d (0x18 = 3 regs x 8 pipes) -> offsets 4..96 */
++         for (int p = 0; p < 8; p++) {
++            OUT_PKT3(ring, CP_REG_TO_MEM, 2);
++            OUT_RING(ring, REG_A2XX_VSC_PIPE_CONFIG(p));
++            OUT_RELOC(ring, fd2_ctx->vsc_regsave_mem, 4 + p * 12, 0, 0);
++            OUT_PKT3(ring, CP_REG_TO_MEM, 2);
++            OUT_RING(ring, REG_A2XX_VSC_PIPE_DATA_ADDRESS(p));
++            OUT_RELOC(ring, fd2_ctx->vsc_regsave_mem, 8 + p * 12, 0, 0);
++            OUT_PKT3(ring, CP_REG_TO_MEM, 2);
++            OUT_RING(ring, REG_A2XX_VSC_PIPE_DATA_LENGTH(p));
++            OUT_RELOC(ring, fd2_ctx->vsc_regsave_mem, 12 + p * 12, 0, 0);
++         }
++      }
++   }
+ }
+ 
+ /* before first tile */
+-- 
+2.43.0
+
