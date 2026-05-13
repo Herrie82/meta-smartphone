@@ -1,0 +1,193 @@
+From per_render_multi_flush Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Wed, 13 May 2026 05:30:00 +0200
+Subject: [PATCH] freedreno: A22X per-render multi-flush to align per-IB cycle
+ counter
+
+Mainline-Linux + freedreno renders the GLES2 hello-triangle on Adreno
+220 with a deterministic period-16 cycle - only 1 in 16 caps produces
+the bit-exact correct output.
+
+Background
+
+  Investigation across patches 0090..0098 (Fork A/B HW binning,
+  CP_SET_BIN_DATA visibility consume, SQ slot scrub, kernel hw_init
+  pulses) localised the cycle to GPU-internal state below the MMIO
+  interface.
+
+  On 2026-05-13 we booted the device to stock webOS and ran
+  tools/gpu-regdump/gl-cap-and-regdump-webos under strace.  webOS
+  issues EXACTLY 16 IOCTL_KGSL_RINGBUFFER_ISSUEIBCMDS per render on
+  /dev/kgsl-3d0.  Mainline Mesa freedreno's Fork A/B path issues 1
+  ioctl per render (the entire per-tile loop is built into a single
+  ringbuffer and submitted in one MSM_SUBMIT).
+
+  v9 0099 NOP-IB sweep (kernel repo reports/v9-nop-ib-sweep-2026-
+  05-13.md) falsified the per-CP_INDIRECT_BUFFER hypothesis: adding
+  0..30 NOP CP_INDIRECT_BUFFER calls inside one Mesa submit produced
+  IDENTICAL cycles.  The GPU's state-cycle counter advances per
+  ISSUEIBCMDS (per Mesa flush), NOT per IB call inside one submit.
+  Period is 16, advance is +1 per Mesa flush, counter resets to
+  phase 0 on kernel boot.
+
+  webOS's 16 ioctls/render -> 16 advances -> wrap mod-16 -> no
+  visible cycle.  Mainline's 1 ioctl/render -> walks all 16 phases
+  over 16 consecutive renders.
+
+Fix
+
+  Just before the real fd_submit_flush() in
+  freedreno_gmem.c::flush_ring(), inject (multiplier - 1) dummy
+  fd_submit_flush() calls.  Each dummy is a minimal 2-dword
+  CP_NOP ringbuffer attached to a fresh fd_submit.  Each goes
+  through MSM_SUBMIT ioctl as its own ISSUEIBCMDS, advancing the
+  GPU's per-IB cycle counter by 1.
+
+  Total submits per Mesa render = multiplier (default 16) ->
+  counter advance per render = 16 mod 16 = 0 -> cycle phase
+  pinned at the kernel-boot value (phase 0 = 5adc3160 = correct
+  clean RGB triangle).
+
+  Tunable via env-var FD2_FLUSH_MULTIPLIER=<n>:
+    n=0/1 -> control / disable (period-16 cycle reappears)
+    n=2   -> period-8 cycle (1 in 8 correct)
+    n=8   -> period-2 cycle (every other cap correct)
+    n=16  -> default, cycle collapsed to single phase
+    n=32  -> two full wraps, still single phase
+
+  Only fires for is_a22x(screen).  A20X / A3XX / A4XX / etc.
+  untouched.
+
+  Cost: 15 extra MSM_SUBMIT ioctls per real render (~10-100 us each
+  at A22X kernel-ioctl rate, worst case ~1.5 ms extra per frame).
+
+  No new BO allocations or persistent state: each dummy submit
+  builds + flushes + frees a tiny ringbuffer inline.
+
+Expected test outcome
+
+  16-cap default test post-deploy on freshly-booted device: all 16
+  caps should produce 5adc3160 (correct RGB triangle), 0 hangchecks.
+
+  Bisect via FD2_FLUSH_MULTIPLIER:
+    FD2_FLUSH_MULTIPLIER=1  -> reverts to period-16 cycle (control)
+    FD2_FLUSH_MULTIPLIER=2  -> period-8 cycle
+    FD2_FLUSH_MULTIPLIER=8  -> period-2 cycle
+    FD2_FLUSH_MULTIPLIER=16 -> all 5adc3160
+
+  If the bisect shows the predicted periodicity, the per-Mesa-flush
+  hypothesis is structurally confirmed and FD2_FLUSH_MULTIPLIER=16
+  can be made the unconditional A22X default in a follow-up.
+
+  If FD2_FLUSH_MULTIPLIER=16 hangs (multiple consecutive MSM_SUBMITs
+  trip Mesa state-tracking the way cap-binary FD2_N_RENDERS=16 did),
+  the dummy-submit construction needs adjustment - possibly explicit
+  fence-wait between dummies, or a longer NOP payload.
+
+Upstream-Status: Pending
+
+Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
+---
+--- a/src/gallium/drivers/freedreno/freedreno_gmem.c
++++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
+@@ -670,6 +670,87 @@
+       ctx->emit_sysmem_fini(batch);
+ }
+ 
++/* v10 0099: A22X per-IB cycle-counter alignment via multi-flush.
++ *
++ * The Adreno 220 has an internal state-cycle counter that advances by
++ * exactly +1 per IOCTL_KGSL_RINGBUFFER_ISSUEIBCMDS (= per Mesa
++ * fd_submit_flush()), period 16.  webOS strace (2026-05-13, kernel
++ * repo reports/webos-strace-2026-05-13/) shows webOS's libGLESv2
++ * issues 16 such ioctls per render, wrapping the counter to phase 0
++ * every render and producing no visible cycle.  Mainline Mesa
++ * freedreno's Fork A/B path emits exactly one ioctl per render (the
++ * per-tile loop is built into a single ringbuffer), so the counter
++ * advances +1/render -> walks all 16 phases over 16 consecutive
++ * renders -> visible period-16 cycle of complete frames where only
++ * 1 in 16 caps (5adc3160) is bit-exact correct.
++ *
++ * Falsified earlier hypotheses (reports/v9-nop-ib-sweep-2026-05-13.md):
++ *   - per-CP_INDIRECT_BUFFER call advance: 128-cap NOP-IB sweep
++ *     showed adding 0..30 NOP IBs inside one Mesa submit changed
++ *     nothing.  Cycle is per-Mesa-flush, not per-IB-call within one
++ *     flush.
++ *
++ * Fix: just before the real fd_submit_flush, issue (multiplier - 1)
++ * dummy fd_submit_flush() calls each containing a 2-dword CP_NOP
++ * ringbuffer.  Each dummy is its own ISSUEIBCMDS ioctl -> +1 counter
++ * advance.  Total submits per render = multiplier (default 16) ->
++ * counter advance per render = 16 mod 16 = 0 -> cycle wraps to a
++ * fixed phase every render.  GPU counter resets to phase 0 on kernel
++ * boot, so all renders post-boot land at phase 0 -> 5adc3160
++ * (correct) every cap.
++ *
++ * Tunable via env-var FD2_FLUSH_MULTIPLIER=<n>:
++ *   n=0/1 -> control / disable (period-16 cycle reappears)
++ *   n=2   -> period-8 cycle (1 in 8 correct)
++ *   n=8   -> period-2 cycle (every other cap correct)
++ *   n=16  -> default, cycle collapsed to single phase
++ *   n=32  -> two full wraps, still single phase
++ *
++ * Only fires for is_a22x(screen).  A20X / future Adreno gens
++ * untouched.  Cost: 15 extra MSM_SUBMIT ioctls per real render
++ * (~10-100 us each at A22X kernel-ioctl rate, worst case ~1.5 ms
++ * extra per frame).
++ */
++static void
++fd_a22x_multi_flush_align(struct fd_batch *batch)
++{
++   struct fd_screen *screen = batch->ctx->screen;
++
++   if (FD_DBG(NOHW))
++      return;
++   if (!is_a22x(screen))
++      return;
++
++   int multiplier = 16;
++   const char *e = getenv("FD2_FLUSH_MULTIPLIER");
++   if (e)
++      multiplier = atoi(e);
++   if (multiplier <= 1)
++      return;
++
++   for (int i = 0; i < multiplier - 1; i++) {
++      struct fd_submit *dummy = fd_submit_new(batch->ctx->pipe);
++      if (!dummy)
++         break;
++      struct fd_ringbuffer *rb =
++         fd_submit_new_ringbuffer(dummy, 8, FD_RINGBUFFER_PRIMARY);
++      if (!rb) {
++         fd_submit_del(dummy);
++         break;
++      }
++      /* Minimum valid PM4 packet: CP_NOP (type-3 opcode 0x10) header
++       * with count-1=0 implies 1 payload dword.  IB total = 2 dwords.
++       * Same form as patch 0099 v2's NOP-IB (proven safe on this HW). */
++      OUT_PKT3(rb, CP_NOP, 0);
++      OUT_RING(rb, 0x00000000);
++
++      struct fd_fence *df = fd_submit_flush(dummy, -1, false);
++      if (df)
++         fd_fence_del(df);
++      fd_submit_del(dummy);
++   }
++}
++
+ static void
+ flush_ring(struct fd_batch *batch)
+ {
+@@ -679,6 +760,12 @@
+ 
+    struct fd_fence *fence;
+ 
++   /* v10 0099: align A22X per-IB cycle counter to phase 0 with N-1
++    * dummy ISSUEIBCMDS before the real submit.  See block comment
++    * above fd_a22x_multi_flush_align() for full rationale.
++    */
++   fd_a22x_multi_flush_align(batch);
++
+    if (FD_DBG(NOHW)) {
+       /* construct a dummy fence: */
+       fence = fd_fence_new(batch->ctx->pipe, use_fence_fd);
