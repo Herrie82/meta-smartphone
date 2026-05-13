@@ -1,0 +1,78 @@
+From c7ba478c4ae1f6efa506588a7e9a928f8754df98 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Wed, 13 May 2026 15:39:32 +0200
+Subject: [PATCH] freedreno/a2xx: A22X inline TC_CNTL_STATUS L2_INVALIDATE
+ emission (vendor pattern)
+
+Vendor libGLESv2 binary survey (reports/gemini-summary-2026-05-13-
+round5.md) found that HTC, Samsung, Xiaomi, AND webOS all have a
+leia_cmdbuffer_inserttexcacheinvalid helper that emits exactly:
+
+  PM4 type-0 header for REG_A2XX_TC_CNTL_STATUS (word 0x0e00), count=1
+  value = 0x1 (L2_INVALIDATE bit 0)
+
+We previously tested this register write via debugfs (CPU-side
+direct MMIO) - no effect on 0x0ee2 cycle.  However, the debugfs
+path writes while the GPU may be clock-gated by pm_runtime, so the
+write may silently no-op.  Inline emission means the CP firmware
+executes the write during active render - different timing, possibly
+different semantics on slot state.
+
+FD2_END_TC_INV=N (gates the emission, N=number of writes) controls
+when this fires.  Default (env unset) = byte-identical to prior.
+
+Hook point: end of tile loop (fd2_emit_tile_fini) - the same
+location as round-4 DEALLOC tests, to allow direct comparison.
+
+Test: FD2_END_TC_INV=1 FD2_FLUSH_MULTIPLIER=1 cap-binary
+Read 0x0ee2 via /sys/kernel/debug/dri/0/regrw_value to check
+whether advance is stopped / pinned / unchanged.
+
+Upstream-Status: Pending
+
+Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 27 +++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+index 283b383d4f7..bf2870fdca6 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -657,6 +657,33 @@ fd2_emit_tile_fini(struct fd_batch *batch) assert_dt
+          OUT_RING(ring, 0x16);  /* CACHE_FLUSH_AND_INV_EVENT */
+       }
+    }
++
++   /* FD2_END_TC_INV=N: emit N inline TC_CNTL_STATUS = L2_INVALIDATE
++    * writes at end of tile loop (PM4 type-0 register write).
++    *
++    * Decompiled vendor libGLESv2 binaries (HTC/Samsung/Xiaomi/webOS)
++    * all have a leia_cmdbuffer_inserttexcacheinvalid helper that
++    * emits exactly this:
++    *
++    *   *param_1 = 0xe00;   (PM4 type-0 header, write 1 dword to
++    *                        REG_A2XX_TC_CNTL_STATUS word 0x0e00)
++    *   param_1[1] = 1;     (value = L2_INVALIDATE bit 0)
++    *
++    * We tested writing this register via debugfs (CPU-side direct
++    * MMIO write) and got no effect on 0x0ee2 cycle.  But that path
++    * may hit GPU while clock-gated and silently fail.  Inline-in-
++    * cmdstream emission means CP executes the write during active
++    * render - different timing, possibly different semantics.
++    */
++   const char *tcinv_env = getenv("FD2_END_TC_INV");
++   if (tcinv_env) {
++      int n = atoi(tcinv_env);
++      if (n <= 0) n = 1;
++      for (int i = 0; i < n; i++) {
++         OUT_PKT0(ring, REG_A2XX_TC_CNTL_STATUS, 1);
++         OUT_RING(ring, A2XX_TC_CNTL_STATUS_L2_INVALIDATE);
++      }
++   }
+ }
+ 
+ /* before first tile */
+-- 
+2.43.0
+
