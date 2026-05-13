@@ -47,6 +47,7 @@ SRC_URI:append = " \
     file://0011-freedreno-a2xx-A22X-Fork-A-B-baseline-bisect-env-tog.patch \
     file://0012-freedreno-a2xx-A22X-CP_SET_BIN_DATA-visibility-consu.patch \
     file://0013-freedreno-A22X-per-render-multi-flush-v5a-zero-verte.patch \
+    file://0014-freedreno-a2xx-emit-end-of-tile-loop-CP_EVENT_WRITE-.patch \
 "
 # 0098 (NEW): A22X webOS-style CP_SET_BIN_DATA visibility-stream consume.
 # Adds vsc_size_mem BO, writes A220_VSC_SIZE_ADDRESS in prelude, and
