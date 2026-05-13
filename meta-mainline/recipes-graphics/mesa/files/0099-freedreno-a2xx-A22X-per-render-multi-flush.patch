@@ -101,10 +101,10 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
 ---
 --- a/src/gallium/drivers/freedreno/freedreno_gmem.c
 +++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
-@@ -670,6 +670,99 @@
+@@ -670,6 +670,98 @@
        ctx->emit_sysmem_fini(batch);
  }
-
+ 
 +/* v10 0099 v3: A22X per-IB cycle-counter alignment via post-submit
 + * multi-flush.
 + *
@@ -200,10 +200,10 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
  static void
  flush_ring(struct fd_batch *batch)
  {
-@@ -686,6 +779,12 @@
+@@ -686,6 +778,12 @@
        fence = fd_submit_flush(batch->submit, batch->in_fence_fd, use_fence_fd);
     }
-
+ 
 +   /* v10 0099 v3: align A22X per-IB cycle counter via N-1 dummy
 +    * ISSUEIBCMDS AFTER the real submit.  Pre-submit injection (v1/v2)
 +    * hung the GPU.  See block comment above fd_a22x_multi_flush_align().
