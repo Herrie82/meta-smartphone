@@ -36,17 +36,17 @@ PACKAGECONFIG:append = " freedreno"
 SRC_URI:append = " \
     file://0001-freedreno-add-is_a22x-helper-for-Adreno-220-225.patch \
     file://0002-freedreno-a2xx-increase-scheduler-instruction-limit.patch \
-    file://0040-freedreno-a2xx-WAIT_FOR_IDLE-at-start-of-fd2_emit_re.patch \
-    file://0045-freedreno-a2xx-fix-non-fast-clear-color-on-A22X-writ.patch \
-    file://0046-freedreno-a2xx-aggressive-cache-flush-invalidate-at-.patch \
-    file://0090-freedreno-a2xx-write-per-tile-VGT_CURRENT_BIN_ID-for.patch \
-    file://0093-freedreno-a2xx-Fork-C-minimum-viable-A22X-hw-binning.patch \
-    file://0094-freedreno-a2xx-VSC-pipe-BO-dump-diagnostic.patch \
-    file://0095-freedreno-a2xx-ir2_nir-skip-memexport-CFs-for-A22X.patch \
-    file://0096-freedreno-a2xx-CP_SCRATCH-milestone-markers-Fork-AB.patch \
-    file://0097-freedreno-a2xx-bisect-toggles-Fork-AB-env-vars.patch \
-    file://0098-freedreno-a2xx-A22X-CP_SET_BIN_DATA-visibility-consu.patch \
-    file://0099-freedreno-a2xx-A22X-per-render-multi-flush.patch \
+    file://0003-freedreno-a2xx-WAIT_FOR_IDLE-at-start-of-fd2_emit_re.patch \
+    file://0004-freedreno-a2xx-fix-non-fast-clear-color-on-A22X-writ.patch \
+    file://0005-freedreno-a2xx-cache-flush-invalidate-at-batch-start.patch \
+    file://0006-freedreno-a2xx-write-per-tile-VGT_CURRENT_BIN_ID-for.patch \
+    file://0007-freedreno-a2xx-A22X-Fork-A-B-enable-hw_binning-with-.patch \
+    file://0008-freedreno-a2xx-diagnostic-VSC-pipe-BO-dump-FD2_VSC_D.patch \
+    file://0009-freedreno-a2xx-ir2_nir-skip-A20X-memexport-CFs-for-A.patch \
+    file://0010-freedreno-a2xx-CP_SCRATCH-milestone-markers-for-Fork.patch \
+    file://0011-freedreno-a2xx-A22X-Fork-A-B-baseline-bisect-env-tog.patch \
+    file://0012-freedreno-a2xx-A22X-CP_SET_BIN_DATA-visibility-consu.patch \
+    file://0013-freedreno-A22X-per-render-multi-flush-v4-fence-wait-.patch \
 "
 # 0098 (NEW): A22X webOS-style CP_SET_BIN_DATA visibility-stream consume.
 # Adds vsc_size_mem BO, writes A220_VSC_SIZE_ADDRESS in prelude, and

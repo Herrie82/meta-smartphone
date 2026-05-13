@@ -1,7 +1,10 @@
-From forkab_baseline Mon Sep 17 00:00:00 2001
+From 19be2f253ca9dcdbb68148426f1c834085ec09c9 Mon Sep 17 00:00:00 2001
 From: Herman van Hazendonk <github.com@herrie.org>
-Date: Mon, 12 May 2026 05:00:00 +0200
+Date: Tue, 12 May 2026 05:00:00 +0200
 Subject: [PATCH] freedreno/a2xx: A22X Fork A/B baseline + bisect env toggles
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 Post-bisect (2026-05-12). Sets the A22X default to the proven-stable
 "Test 4" configuration:
@@ -41,12 +44,14 @@ Companion to 0093 + 0094 + 0095 + 0096.
 
 Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
 ---
- src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 75 +++++++++++++++++++--
- 1 file changed, 70 insertions(+), 5 deletions(-)
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 241 +++++++++++++++++-
+ 1 file changed, 227 insertions(+), 14 deletions(-)
 
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+index 3d410aafc75..59c16ccd81e 100644
 --- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
 +++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
-@@ -57,7 +57,6 @@
+@@ -57,7 +57,6 @@ use_hw_binning(struct fd_batch *batch)
  
     /* A20X uses shader-memexport-based binning; A22X uses the HW binner
      * engaged by LRZ_VSC_CONTROL=3 + the prelude in the A22X branch below.
@@ -54,7 +59,7 @@ Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
      */
     if (!is_a20x(batch->ctx->screen) && !is_a22x(batch->ctx->screen))
        return false;
-@@ -173,7 +172,8 @@
+@@ -173,7 +172,8 @@ prepare_tile_fini_ib(struct fd_batch *batch) assert_dt
  
     OUT_PKT3(ring, CP_SET_CONSTANT, 2);
     OUT_RING(ring, CP_REG(REG_A2XX_PA_CL_CLIP_CNTL));
@@ -64,7 +69,7 @@ Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
  
     OUT_PKT3(ring, CP_SET_CONSTANT, 5);
     OUT_RING(ring, CP_REG(REG_A2XX_PA_CL_VPORT_XSCALE));
-@@ -182,6 +182,22 @@
+@@ -182,6 +182,22 @@ prepare_tile_fini_ib(struct fd_batch *batch) assert_dt
     OUT_RING(ring, fui((float)gmem->bin_h / 2.0f)); /* YSCALE */
     OUT_RING(ring, fui((float)gmem->bin_h / 2.0f)); /* YOFFSET */
  
@@ -87,7 +92,7 @@ Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
     OUT_PKT3(ring, CP_SET_CONSTANT, 2);
     OUT_RING(ring, CP_REG(REG_A2XX_RB_MODECONTROL));
     OUT_RING(ring, A2XX_RB_MODECONTROL_EDRAM_MODE(EDRAM_COPY));
-@@ -192,14 +208,20 @@
+@@ -192,14 +208,20 @@ prepare_tile_fini_ib(struct fd_batch *batch) assert_dt
     if (batch->resolve & FD_BUFFER_COLOR)
        emit_gmem2mem_surf(batch, gmem->cbuf_base[0], &pfb->cbufs[0]);
  
@@ -109,7 +114,7 @@ Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
     }
  }
  
-@@ -207,6 +229,18 @@
+@@ -207,6 +229,18 @@ static void
  fd2_emit_tile_gmem2mem(struct fd_batch *batch, const struct fd_tile *tile)
  {
     fd2_emit_ib(batch->gmem, batch->tile_store);
@@ -128,7 +133,7 @@ Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
  }
  
  /* transfer from system memory to gmem */
-@@ -297,11 +331,27 @@
+@@ -297,11 +331,27 @@ fd2_emit_tile_mem2gmem(struct fd_batch *batch,
     OUT_RING(ring, CP_REG(REG_A2XX_VGT_INDX_OFFSET));
     OUT_RING(ring, 0);
  
@@ -156,7 +161,7 @@ Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
     OUT_PKT3(ring, CP_SET_CONSTANT, 2);
     OUT_RING(ring, CP_REG(REG_A2XX_RB_DEPTHCONTROL));
     OUT_RING(ring, A2XX_RB_DEPTHCONTROL_EARLY_Z_ENABLE);
-@@ -357,7 +407,8 @@
+@@ -357,7 +407,8 @@ fd2_emit_tile_mem2gmem(struct fd_batch *batch,
  
     OUT_PKT3(ring, CP_SET_CONSTANT, 2);
     OUT_RING(ring, CP_REG(REG_A2XX_PA_CL_CLIP_CNTL));
@@ -166,7 +171,7 @@ Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
  
     if (fd_gmem_needs_restore(batch, tile, FD_BUFFER_DEPTH | FD_BUFFER_STENCIL))
        emit_mem2gmem_surf(batch, gmem->zsbuf_base[0], &pfb->zsbuf);
-@@ -365,6 +416,14 @@
+@@ -365,6 +416,14 @@ fd2_emit_tile_mem2gmem(struct fd_batch *batch,
     if (fd_gmem_needs_restore(batch, tile, FD_BUFFER_COLOR))
        emit_mem2gmem_surf(batch, gmem->cbuf_base[0], &pfb->cbufs[0]);
  
@@ -181,7 +186,7 @@ Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
     OUT_PKT3(ring, CP_SET_CONSTANT, 2);
     OUT_RING(ring, CP_REG(REG_A2XX_PA_CL_VTE_CNTL));
     OUT_RING(ring, A2XX_PA_CL_VTE_CNTL_VTX_W0_FMT |
-@@ -375,7 +434,51 @@
+@@ -375,7 +434,51 @@ fd2_emit_tile_mem2gmem(struct fd_batch *batch,
                       A2XX_PA_CL_VTE_CNTL_VPORT_Z_SCALE_ENA |
                       A2XX_PA_CL_VTE_CNTL_VPORT_Z_OFFSET_ENA);
  
@@ -234,7 +239,7 @@ Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
  }
  
  static void
-@@ -461,6 +564,18 @@
+@@ -461,6 +564,18 @@ fd2_emit_sysmem_prep(struct fd_batch *batch)
     patch_draws(batch, IGNORE_VISIBILITY);
     util_dynarray_clear(&batch->draw_patches);
     util_dynarray_clear(&batch->shader_patches);
@@ -253,7 +258,7 @@ Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
  }
  
  /* before first tile */
-@@ -567,8 +682,12 @@
+@@ -567,8 +682,12 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
  
     /* set to zero, for some reason hardware doesn't like certain values
      *
@@ -268,7 +273,7 @@ Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
      */
     if (!is_a22x(ctx->screen)) {
        OUT_PKT3(ring, CP_SET_CONSTANT, 2);
-@@ -608,7 +727,44 @@
+@@ -608,7 +727,44 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
      *
      * Reference: reports/a22x-hw-binning-port-analysis.md (sections 1-4).
      */
@@ -313,7 +318,7 @@ Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
        const unsigned num_pipes = 8;
  
        /* DIAGNOSTIC: dump VSC pipe BO contents from the PREVIOUS batch
-@@ -763,7 +919,21 @@
+@@ -763,7 +919,21 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
     }
  
     if (use_hw_binning(batch)) {
@@ -336,7 +341,7 @@ Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
  
        if (is_a20x(ctx->screen)) {
           /* A20X hw binning: shader-memexport mechanism.
-@@ -859,6 +1029,8 @@
+@@ -859,6 +1029,8 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
         * in a follow-up (modify ir2_nir.c to skip memexport for A22X).
         */
  
@@ -345,7 +350,7 @@ Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
        OUT_PKT3(ring, CP_SET_CONSTANT, 2);
        OUT_RING(ring, CP_REG(REG_A2XX_VGT_VERTEX_REUSE_BLOCK_CNTL));
        OUT_RING(ring, 0);
-@@ -867,17 +1039,25 @@
+@@ -867,17 +1039,25 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
        OUT_PKT0(ring, REG_AXXX_CP_SCRATCH_REG3, 1);
        OUT_RING(ring, 0x10004);
  
@@ -373,7 +378,7 @@ Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
           /* Disengage the A22X HW binner after the binning IB has run.
            * Subsequent per-tile rendering uses the visibility data the
            * binner wrote to VSC_PIPE BOs, but the binner itself should
-@@ -984,13 +1164,46 @@
+@@ -984,13 +1164,46 @@ fd2_emit_tile_renderprep(struct fd_batch *batch,
        OUT_RING(ring, tile->n);
  
        /* TODO only emit this when tile->p changes */
@@ -424,3 +429,6 @@ Upstream-Status: Pending [A22X visibility-consume mechanism still TBD]
         */
        uint32_t col = tile->xoff / tile->bin_w;
        uint32_t row = tile->yoff / tile->bin_h;
+-- 
+2.43.0
+

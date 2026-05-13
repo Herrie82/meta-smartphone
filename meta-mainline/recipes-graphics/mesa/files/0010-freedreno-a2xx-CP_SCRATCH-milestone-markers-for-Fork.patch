@@ -1,7 +1,11 @@
-From forkab_markers_v2 Mon Sep 17 00:00:00 2001
+From 30c43d361e906bc3fcd5a461efdbd11c5f5e096b Mon Sep 17 00:00:00 2001
 From: Herman van Hazendonk <github.com@herrie.org>
 Date: Mon, 11 May 2026 19:30:00 +0200
-Subject: [PATCH] freedreno/a2xx: CP_SCRATCH milestone markers for Fork A/B hang diagnostics
+Subject: [PATCH] freedreno/a2xx: CP_SCRATCH milestone markers for Fork A/B
+ hang diagnostics
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 Fork A/B (patch 0093) + 0095 hard-locks the GPU on submit#1.
 Netconsole showed:
@@ -31,12 +35,14 @@ Companion to 0093 + 0094 + 0095. Diagnostic-only.
 
 Upstream-Status: Inappropriate [diagnostic only]
 ---
- src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 51 +++++++++++++++++++
- 1 file changed, 51 insertions(+)
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 43 +++++++++++++++++++
+ 1 file changed, 43 insertions(+)
 
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+index 610c513e65c..3d410aafc75 100644
 --- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
 +++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
-@@ -474,8 +474,31 @@
+@@ -474,8 +474,31 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
     enum pipe_format format = pipe_surface_format(&pfb->cbufs[0]);
     uint32_t reg;
  
@@ -68,7 +74,7 @@ Upstream-Status: Inappropriate [diagnostic only]
     prepare_tile_fini_ib(batch);
  
     OUT_PKT3(ring, CP_SET_CONSTANT, 4);
-@@ -733,6 +756,10 @@
+@@ -733,6 +756,10 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
  
        OUT_PKT0(ring, REG_A2XX_SQ_GPR_MANAGEMENT, 1);
        OUT_RING(ring, 0x00040401);   /* VS=64, PS=64, REG_DYNAMIC=1 */
@@ -79,7 +85,7 @@ Upstream-Status: Inappropriate [diagnostic only]
     }
  
     if (use_hw_binning(batch)) {
-@@ -836,8 +863,16 @@
+@@ -836,8 +863,16 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
        OUT_RING(ring, CP_REG(REG_A2XX_VGT_VERTEX_REUSE_BLOCK_CNTL));
        OUT_RING(ring, 0);
  
@@ -96,7 +102,7 @@ Upstream-Status: Inappropriate [diagnostic only]
        OUT_PKT3(ring, CP_SET_CONSTANT, 2);
        OUT_RING(ring, CP_REG(REG_A2XX_VGT_VERTEX_REUSE_BLOCK_CNTL));
        OUT_RING(ring, 0x00000002);
-@@ -852,11 +887,19 @@
+@@ -852,11 +887,19 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
           OUT_RING(ring, CP_REG(REG_A2XX_A220_RB_LRZ_VSC_CONTROL));
           OUT_RING(ring, 0x00000000);
           OUT_WFI(ring);
@@ -116,3 +122,6 @@ Upstream-Status: Inappropriate [diagnostic only]
     util_dynarray_clear(&batch->draw_patches);
     util_dynarray_clear(&batch->shader_patches);
  }
+-- 
+2.43.0
+

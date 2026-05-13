@@ -1,8 +1,8 @@
-From combined Mon Sep 17 00:00:00 2001
+From 19a96f187fc7caf1bb2f75c1018bb3bbba5470c9 Mon Sep 17 00:00:00 2001
 From: Herman van Hazendonk <github.com@herrie.org>
 Date: Mon, 11 May 2026 15:30:00 +0200
-Subject: [PATCH] freedreno/a2xx: write per-tile VGT_CURRENT_BIN_ID for A22X
- + skip BIN_ID=0 init
+Subject: [PATCH] freedreno/a2xx: write per-tile VGT_CURRENT_BIN_ID for A22X +
+ skip BIN_ID=0 init
 
 Combined fix for the A22X period-8 tile-coverage cycle. Visual analysis
 confirmed the cycle is GMEM tile-binning visibility-stream variation
@@ -33,12 +33,14 @@ matches.
 
 Upstream-Status: Pending
 ---
- src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 31 ++++++++++++++++---
- 1 file changed, 27 insertions(+), 4 deletions(-)
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 37 +++++++++++++++----
+ 1 file changed, 30 insertions(+), 7 deletions(-)
 
---- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c	2026-05-11 14:51:00.521078654 +0200
-+++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c	2026-05-11 14:51:47.706867546 +0200
-@@ -541,14 +541,20 @@
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+index dfdb9c9ab01..af0b648a0c2 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -541,14 +541,20 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
     }
     util_dynarray_clear(&batch->gmem_patches);
  
@@ -66,7 +68,7 @@ Upstream-Status: Pending
  
     if (use_hw_binning(batch)) {
        /* patch out unneeded memory exports by changing EXEC CF to EXEC_END
-@@ -729,6 +735,23 @@
+@@ -729,6 +735,23 @@ fd2_emit_tile_renderprep(struct fd_batch *batch,
        /* TODO only emit this when tile->p changes */
        OUT_PKT3(ring, CP_SET_DRAW_INIT_FLAGS, 1);
        OUT_RELOC(ring, pipe_bo, 0, 0, 0);
@@ -90,3 +92,6 @@ Upstream-Status: Pending
     }
  }
  
+-- 
+2.43.0
+

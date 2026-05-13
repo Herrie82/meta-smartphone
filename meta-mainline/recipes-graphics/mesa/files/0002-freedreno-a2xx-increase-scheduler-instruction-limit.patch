@@ -1,0 +1,26 @@
+From d34a8460484bc12d8311d3a0da1c0a25fe7d5e5c Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Sat, 21 Feb 2026 18:01:35 +0100
+Subject: [PATCH] freedreno/a2xx: increase scheduler instruction limit
+
+Upstream-Status: Pending
+---
+ src/gallium/drivers/freedreno/a2xx/ir2_private.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/ir2_private.h b/src/gallium/drivers/freedreno/a2xx/ir2_private.h
+index 11860338090..43137b80645 100644
+--- a/src/gallium/drivers/freedreno/a2xx/ir2_private.h
++++ b/src/gallium/drivers/freedreno/a2xx/ir2_private.h
+@@ -163,7 +163,7 @@ struct ir2_context {
+    struct ir2_instr instr[0x300];
+    unsigned instr_count;
+ 
+-   struct ir2_sched_instr instr_sched[0x180];
++   struct ir2_sched_instr instr_sched[0x400];
+    unsigned instr_sched_count;
+ };
+ 
+-- 
+2.43.0
+

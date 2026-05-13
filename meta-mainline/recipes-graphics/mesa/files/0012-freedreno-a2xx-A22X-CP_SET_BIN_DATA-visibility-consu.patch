@@ -1,8 +1,11 @@
-From cp_set_bin_data_v8 Mon Sep 17 00:00:00 2001
+From 52b95235713e2f0befe78aff399f7da698095202 Mon Sep 17 00:00:00 2001
 From: Herman van Hazendonk <github.com@herrie.org>
 Date: Tue, 12 May 2026 19:30:00 +0200
 Subject: [PATCH] freedreno/a2xx: A22X CP_SET_BIN_DATA visibility consume +
  FD2_PIN_BIN_ID slot test (v8)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 v7 default + FD2_VSC_DUMP work; FD2_USE_BIN_DATA / FD2_BIN_DATA_NO_VIS
 still hang because Mesa's A22X binning shader doesn't produce real
@@ -57,9 +60,17 @@ Upstream-Status: Pending
 
 Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
 ---
+ src/freedreno/registers/adreno/a2xx.xml       |  32 +-
+ .../drivers/freedreno/a2xx/fd2_context.c      |   5 +
+ .../drivers/freedreno/a2xx/fd2_context.h      |   9 +
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 281 ++++++++++++++++--
+ 4 files changed, 296 insertions(+), 31 deletions(-)
+
+diff --git a/src/freedreno/registers/adreno/a2xx.xml b/src/freedreno/registers/adreno/a2xx.xml
+index 22caddaa0db..940087503c1 100644
 --- a/src/freedreno/registers/adreno/a2xx.xml
 +++ b/src/freedreno/registers/adreno/a2xx.xml
-@@ -1087,7 +1087,13 @@
+@@ -1087,7 +1087,13 @@ xsi:schemaLocation="https://gitlab.freedesktop.org/freedreno/ rules-fd.xsd">
  	<reg32 offset="0x0398" name="RBBM_PERFCOUNTER0_HI"/>
  	<reg32 offset="0x0399" name="RBBM_PERFCOUNTER1_LO"/>
  	<reg32 offset="0x039a" name="RBBM_PERFCOUNTER1_HI"/>
@@ -74,7 +85,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
  	<reg32 offset="0x039c" name="RBBM_PM_OVERRIDE1">
  		<bitfield name="RBBM_AHBCLK_PM_OVERRIDE" pos="0" type="boolean"/>
  		<bitfield name="SC_REG_SCLK_PM_OVERRIDE" pos="1" type="boolean"/>
-@@ -1209,10 +1215,23 @@
+@@ -1209,10 +1215,23 @@ xsi:schemaLocation="https://gitlab.freedesktop.org/freedreno/ rules-fd.xsd">
  	<reg32 offset="0x0a44" name="MH_INTERRUPT_CLEAR"/>
  	<reg32 offset="0x0a54" name="MH_CLNT_INTF_CTRL_CONFIG1"/>
  	<reg32 offset="0x0a55" name="MH_CLNT_INTF_CTRL_CONFIG2"/>
@@ -98,7 +109,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
  	<array offset="0x0c06" name="VSC_PIPE" stride="3" length="8">
  		<reg32 offset="0x0" name="CONFIG"/>
  		<reg32 offset="0x1" name="DATA_ADDRESS"/>
-@@ -1499,7 +1518,16 @@
+@@ -1499,7 +1518,16 @@ xsi:schemaLocation="https://gitlab.freedesktop.org/freedreno/ rules-fd.xsd">
  	<reg32 offset="0x2208" name="RB_MODECONTROL">
  		<bitfield name="EDRAM_MODE" low="0" high="2" type="a2xx_rb_edram_mode"/>
  	</reg32>
@@ -116,6 +127,8 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
  	<reg32 offset="0x220a" name="RB_SAMPLE_POS"/>
  	<reg32 offset="0x220b" name="CLEAR_COLOR">
  		<bitfield name="RED" low="0" high="7"/>
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_context.c b/src/gallium/drivers/freedreno/a2xx/fd2_context.c
+index 2ae423ca52f..8ba4b150fb2 100644
 --- a/src/gallium/drivers/freedreno/a2xx/fd2_context.c
 +++ b/src/gallium/drivers/freedreno/a2xx/fd2_context.c
 @@ -20,6 +20,11 @@
@@ -130,9 +143,11 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
     fd_context_destroy(pctx);
     free(pctx);
  }
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_context.h b/src/gallium/drivers/freedreno/a2xx/fd2_context.h
+index 97a2be7dead..f5509899e3a 100644
 --- a/src/gallium/drivers/freedreno/a2xx/fd2_context.h
 +++ b/src/gallium/drivers/freedreno/a2xx/fd2_context.h
-@@ -18,6 +18,15 @@
+@@ -18,6 +18,15 @@ struct fd2_context {
      * vertices and tex coords:
      */
     struct pipe_resource *solid_vertexbuf;
@@ -148,9 +163,11 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
  };
  
  static inline struct fd2_context *
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+index 59c16ccd81e..2db72d06841 100644
 --- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
 +++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
-@@ -583,6 +583,7 @@
+@@ -583,6 +583,7 @@ static void
  fd2_emit_tile_init(struct fd_batch *batch) assert_dt
  {
     struct fd_context *ctx = batch->ctx;
@@ -158,7 +175,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
     struct fd_ringbuffer *ring = batch->gmem;
     struct pipe_framebuffer_state *pfb = &batch->framebuffer;
     const struct fd_gmem_stateobj *gmem = batch->gmem_state;
-@@ -747,13 +748,52 @@
+@@ -747,13 +748,52 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
      *   FD2_SKIP_BINNING_IB    skip fd2_emit_ib(batch->binning)
      *   FD2_FORCE_VISIBILITY   re-enable patch_draws(USE_VIS) + per-tile
      *                          CP_SET_DRAW_INIT_FLAGS for A22X (WILL HANG)
@@ -215,7 +232,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
     if (is_a22x(ctx->screen) && use_hw_binning(batch)) {
        for (int i = 0; i < 8; i++) {
           if (!ctx->vsc_pipe_bo[i]) {
-@@ -762,6 +802,14 @@
+@@ -762,6 +802,14 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
              assert(ctx->vsc_pipe_bo[i]);
           }
        }
@@ -230,7 +247,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
     }
  
     if (is_a22x(ctx->screen) && !getenv("FD2_SKIP_PRELUDE")) {
-@@ -830,6 +878,53 @@
+@@ -830,6 +878,53 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
        OUT_RING(ring, A2XX_A220_VSC_BIN_SIZE_WIDTH(gmem->bin_w) |
                       A2XX_A220_VSC_BIN_SIZE_HEIGHT(gmem->bin_h));
  
@@ -284,7 +301,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
        /* VSC_PIPE[0..7]: 24 consecutive regs at 0xC06 (CONFIG, ADDRESS, LENGTH)
         * CONFIG encoding from webOS decomp: (h<<24)|(w<<20)|(y<<10)|x.
         * Bit layout independently verified against documented A3XX
-@@ -867,12 +962,13 @@
+@@ -867,12 +962,13 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
        OUT_RING(ring, 0x00000000);
        OUT_WFI(ring);
  
@@ -303,7 +320,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
  
        /* Engage the binner: A220_RB_LRZ_VSC_CONTROL = 3 (webOS value).
         * WFI follows immediately after, per webOS ordering — earlier v2
-@@ -919,21 +1015,37 @@
+@@ -919,21 +1015,37 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
     }
  
     if (use_hw_binning(batch)) {
@@ -311,13 +328,12 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
 -       * (patch_draws(USE_VISIBILITY) + per-tile CP_SET_DRAW_INIT_FLAGS)
 -       * hard-hangs the GPU on A22X — confirmed across multiple bisect
 -       * tests including with the binning IB actually running.
--       *
++      /* A22X default = IGNORE_VISIBILITY (Test 4 shipping baseline).
++       * Env-vars that switch the A22X consume path:
+        *
 -       * webOS likely uses a different A22X-specific visibility-consume
 -       * packet. Until that's identified, ship the working "binning IB
 -       * runs, no visibility filter" config (Test 4) as the default.
-+      /* A22X default = IGNORE_VISIBILITY (Test 4 shipping baseline).
-+       * Env-vars that switch the A22X consume path:
-+       *
 +       *   FD2_USE_BIN_DATA       webOS-style CP_SET_BIN_DATA per tile.
 +       *                          Implies USE_VISIBILITY so the draws
 +       *                          actually consume the stream the
@@ -354,7 +370,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
  
        if (is_a20x(ctx->screen)) {
           /* A20X hw binning: shader-memexport mechanism.
-@@ -1062,11 +1174,52 @@
+@@ -1062,11 +1174,52 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
            * Subsequent per-tile rendering uses the visibility data the
            * binner wrote to VSC_PIPE BOs, but the binner itself should
            * not be re-engaged for render-pass draws.
@@ -408,7 +424,7 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
  
           /* DIAGNOSTIC: marker 6 = disengage complete */
           OUT_PKT0(ring, REG_AXXX_CP_SCRATCH_REG5, 1);
-@@ -1155,19 +1308,89 @@
+@@ -1155,19 +1308,89 @@ fd2_emit_tile_renderprep(struct fd_batch *batch,
     if (use_hw_binning(batch)) {
        struct fd_bo *pipe_bo = ctx->vsc_pipe_bo[tile->p];
  
@@ -505,3 +521,6 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
           OUT_PKT3(ring, CP_SET_DRAW_INIT_FLAGS, 1);
           OUT_RELOC(ring, pipe_bo, 0, 0, 0);
        }
+-- 
+2.43.0
+

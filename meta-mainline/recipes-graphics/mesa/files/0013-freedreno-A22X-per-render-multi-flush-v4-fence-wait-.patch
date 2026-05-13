@@ -1,112 +1,63 @@
-From per_render_multi_flush Mon Sep 17 00:00:00 2001
+From 55c34ba121bbce6d74b23088c27f1b672dfc7019 Mon Sep 17 00:00:00 2001
 From: Herman van Hazendonk <github.com@herrie.org>
 Date: Wed, 13 May 2026 07:50:00 +0200
-Subject: [PATCH] freedreno: A22X per-render multi-flush to align per-IB cycle
- counter (v3 - post-submit)
+Subject: [PATCH] freedreno: A22X per-render multi-flush v4 - fence-wait +
+ instrumentation
 
-Mainline-Linux + freedreno renders the GLES2 hello-triangle on Adreno
-220 with a deterministic period-16 cycle - only 1 in 16 caps produces
-the bit-exact correct output.
+v3 (post-submit, no wait) ran without hangs but failed to pin the
+cycle phase.  multiplier=16 produced 5 unique hashes per 5 caps,
+shifted by 1 phase vs multiplier=1, suggesting only one of the 15
+dummies effectively advanced the per-IB cycle counter before the
+next real render landed.
 
-Background
+v4 changes inside fd_a22x_multi_flush_align():
 
-  Investigation across patches 0090..0098 (Fork A/B HW binning,
-  CP_SET_BIN_DATA visibility consume, SQ slot scrub, kernel hw_init
-  pulses) localised the cycle to GPU-internal state below the MMIO
-  interface.
+  1. After each dummy fd_submit_flush(), call fd_fence_wait() to
+     force the GPU to actually retire that submit before the next
+     dummy fires.  v3 fired all 15 submits back-to-back which the
+     kernel may have coalesced or rejected for the trailing 14.
 
-  On 2026-05-13 webOS strace (kernel repo reports/webos-strace-
-  2026-05-13/) showed webOS issues EXACTLY 16 IOCTL_KGSL_RINGBUFFER_
-  ISSUEIBCMDS per render.  Mainline Mesa freedreno's Fork A/B path
-  issues 1 ioctl per render -> walks all 16 phases over 16
-  consecutive renders.
+  2. Add stderr instrumentation gated on FD2_FLUSH_DEBUG=1 reporting
+     per-render: submit_ok / submit_null / wait_ok / wait_err counts.
+     Lets us see whether all 15 fd_submit_flush() calls actually
+     produced fences and whether each fence retired successfully.
 
-  v9 0099 NOP-IB sweep falsified the per-CP_INDIRECT_BUFFER
-  hypothesis - the counter advances per MSM_SUBMIT ioctl, not per
-  IB call inside one submit.
+Cost: 15 GPU round-trips per real render.  Slower than v3 but
+should make every dummy's contribution to the cycle counter
+observable (or expose where the counter isn't advancing).
 
-v1/v2 pre-submit injection - FALSIFIED
+Expected outcomes:
 
-  v1 (bare CP_NOP, no rb del) hung the GPU on the first dummy at
-  every multiplier >= 2.  v2 added fd_ringbuffer_del() lifecycle fix
-  + CACHE_FLUSH_AND_INV_EVENT body - identical hang result
-  (80 hangchecks).
+  a) v4 pins the phase at multiplier=16: structural fix, the
+     per-MSM_SUBMIT counter hypothesis is correct, just needed
+     synchronization.
 
-  Conclusion: a dummy MSM_SUBMIT issued on the same fd_pipe BEFORE
-  the real batch's submit corrupts state in a way the real submit
-  cannot recover from, regardless of dummy IB1 content.
+  b) v4 still doesn't pin phase but instrumentation shows
+     submit_ok=15 wait_ok=15: 15 dummies are firing + retiring
+     successfully, yet only 1 advance is observed -> the counter
+     does NOT advance +1 per ISSUEIBCMDS.  Pivot to per-tile split
+     (Option E) or kernel-side counter dump.
 
-v3 (this patch) - post-submit injection
-
-  Move the dummy loop to immediately AFTER fd_submit_flush() on the
-  real submit.  Sequence per render:
-
-    1. Mesa builds and flushes the real batch normally (no
-       interference from us).
-    2. After the real submit returns its fence, we issue
-       (multiplier - 1) dummy MSM_SUBMITs each with a 4-dword IB1
-       containing CACHE_FLUSH_AND_INV_EVENT + CP_NOP.
-    3. Each dummy advances the GPU per-IB cycle counter by 1.
-    4. Next render's real submit then sees counter at
-       base + multiplier mod 16 = base (when multiplier=16) -> same
-       phase every render.
-
-  Phase pinning: GPU counter resets to phase 0 on kernel boot.
-  First render lands at phase 0 (= 5adc3160 = correct).  Each
-  subsequent real render also lands at phase 0 once dummies wrap
-  the counter.  All renders post-boot are bit-exact correct.
-
-  Tunable via env-var FD2_FLUSH_MULTIPLIER=<n>:
-    n=0/1 -> control / disable (period-16 cycle reappears)
-    n=2   -> period-8 cycle (every 8th render correct)
-    n=8   -> period-2 cycle (every other render correct)
-    n=16  -> default, every render correct
-    n=32  -> two full wraps, every render correct
-
-  Only fires for is_a22x(screen).
-
-  Cost: 15 extra MSM_SUBMIT ioctls per real render (~10-100 us each,
-  worst case ~1.5 ms extra per frame).
-
-  Dummy IB1 body (4 dwords):
-    CP_EVENT_WRITE CACHE_FLUSH_AND_INV_EVENT  (A2XX event 0x16)
-    CP_NOP 0x00000000
-  Same event fd2_emit_tile_renderprep emits for A22X mem2gmem -
-  proven safe.
-
-  Ringbuffer lifecycle honoured: fd_ringbuffer_del(rb) before
-  fd_submit_del(dummy) per freedreno_ringbuffer.h contract.
-
-Expected test outcome
-
-  Fresh-boot 16-cap default sweep: all 16 caps should hash
-  identically (phase pinned).  If the locked phase is the
-  correct-frame hash (5adc3160 family), v3 is the structural fix.
-
-  Bisect via FD2_FLUSH_MULTIPLIER:
-    =1  -> reverts to period-16 cycle (control)
-    =2  -> period-8 cycle
-    =8  -> period-2 cycle
-    =16 -> single hash
-    =32 -> single hash (2 wraps)
-
-  If post-submit injection ALSO hangs, the issue is back-to-back
-  MSM_SUBMIT rate independent of ordering - next test would be
-  fence-wait between dummies (Option C) or per-tile architectural
-  split (Option E).
+  c) v4 hangs: synchronous wait between submits is unsafe on this
+     HW.  Revert to v3 and pursue Option E.
 
 Upstream-Status: Pending
 
 Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
 ---
+ .../drivers/freedreno/freedreno_gmem.c        | 133 ++++++++++++++++++
+ 1 file changed, 133 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
+index 9f7124dfdee..03c2456b45a 100644
 --- a/src/gallium/drivers/freedreno/freedreno_gmem.c
 +++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
-@@ -670,6 +670,98 @@
+@@ -670,6 +670,133 @@ render_sysmem(struct fd_batch *batch) assert_dt
        ctx->emit_sysmem_fini(batch);
  }
  
-+/* v10 0099 v3: A22X per-IB cycle-counter alignment via post-submit
-+ * multi-flush.
++/* v10 0099 v4: A22X per-IB cycle-counter alignment via post-submit
++ * multi-flush with synchronous fence wait + instrumentation.
 + *
 + * The Adreno 220 has an internal state-cycle counter that advances by
 + * exactly +1 per IOCTL_KGSL_RINGBUFFER_ISSUEIBCMDS (= per Mesa
@@ -123,8 +74,19 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
 + * every multiplier >= 2 (80 hangchecks each).  Pre-real-submit
 + * injection is structurally broken.
 + *
-+ * v3 moves the dummies to AFTER fd_submit_flush() on the real
-+ * submit.  The real batch runs unchanged.  After it returns its
++ * v3 (post-submit, no wait) ran without hangs but FAILED to pin the
++ * cycle phase - multiplier=16 gave 5 unique hashes per 5 caps,
++ * shifted by 1 phase vs multiplier=1.  Effective advance was ~1 per
++ * cap regardless of multiplier, suggesting only ONE of the 15
++ * dummies was actually retiring on the GPU before the next render.
++ *
++ * v4 adds fd_fence_wait() between every dummy submit so each MUST
++ * retire on the GPU before the next dummy fires.  Also adds optional
++ * stderr instrumentation under FD2_FLUSH_DEBUG=1 reporting how many
++ * of the 15 submits actually flushed + retired.
++ *
++ * v3 base design (kept): dummies happen AFTER fd_submit_flush() on
++ * the real submit.  The real batch runs unchanged.  After it returns its
 + * fence, we issue (multiplier - 1) dummy MSM_SUBMITs.  The next
 + * render's real submit then lands at base + multiplier mod 16 =
 + * base (when multiplier=16), giving every render the same cycle
@@ -168,6 +130,9 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
 +   if (multiplier <= 1)
 +      return;
 +
++   bool dbg = getenv("FD2_FLUSH_DEBUG") != NULL;
++   int n_submit_ok = 0, n_submit_null = 0, n_wait_ok = 0, n_wait_err = 0;
++
 +   for (int i = 0; i < multiplier - 1; i++) {
 +      struct fd_submit *dummy = fd_submit_new(batch->ctx->pipe);
 +      if (!dummy)
@@ -187,20 +152,41 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
 +      OUT_RING(rb, 0x00000000);
 +
 +      struct fd_fence *df = fd_submit_flush(dummy, -1, false);
-+      if (df)
++      if (df) {
++         n_submit_ok++;
++         /* v4 Option C: wait for GPU to actually retire each dummy
++          * before issuing the next.  v3 fired all 15 submits back-to-back
++          * without waiting -> apparently only one effectively advanced
++          * the per-IB cycle counter.  Forcing each to retire
++          * synchronously verifies whether every dummy contributes one
++          * advance.  Cost: 15 GPU round-trips per real render. */
++         int r = fd_fence_wait(df);
++         if (r == 0)
++            n_wait_ok++;
++         else
++            n_wait_err++;
 +         fd_fence_del(df);
++      } else {
++         n_submit_null++;
++      }
 +
 +      /* freedreno_ringbuffer.h: all rb's must be unref'd before
 +       * fd_submit_del. */
 +      fd_ringbuffer_del(rb);
 +      fd_submit_del(dummy);
 +   }
++
++   if (dbg) {
++      fprintf(stderr, "[fd_a22x_multi_flush_align] mult=%d submit_ok=%d "
++              "submit_null=%d wait_ok=%d wait_err=%d\n",
++              multiplier, n_submit_ok, n_submit_null, n_wait_ok, n_wait_err);
++   }
 +}
 +
  static void
  flush_ring(struct fd_batch *batch)
  {
-@@ -686,6 +778,12 @@
+@@ -686,6 +813,12 @@ flush_ring(struct fd_batch *batch)
        fence = fd_submit_flush(batch->submit, batch->in_fence_fd, use_fence_fd);
     }
  
@@ -213,3 +199,6 @@ Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
     if (batch->fence) {
        fd_pipe_fence_set_submit_fence(batch->fence, fence);
     } else {
+-- 
+2.43.0
+
