@@ -2,10 +2,10 @@ require recipes-kernel/linux/linux-yocto.inc
 
 SECTION = "kernel"
 
-DESCRIPTION = "Linux kernel for HP Touchpad"
+DESCRIPTION = "Linux kernel for HP Touchpad 3G"
 
 # Mark archs/machines that this kernel supports
-COMPATIBLE_MACHINE = "tenderloin"
+COMPATIBLE_MACHINE = "tenderloin3g"
 
 LIC_FILES_CHKSUM = "file://COPYING;md5=6bc538ed5bd9a7fc9398086aedcd7e46"
 
@@ -17,6 +17,7 @@ LINUX_VERSION_EXTENSION = "-luneos"
 LINUX_KMETA_BRANCH = "yocto-6.18"
 KMETA = "kernel-meta"
 KBUILD_DEFCONFIG:tenderloin = "tenderloin_debug_defconfig"
+KBUILD_DEFCONFIG:tenderloin3g = "tenderloin_debug_defconfig"
 KCONFIG_MODE = "alldefconfig"
 
 SRCREV_machine = "${AUTOREV}"
@@ -77,7 +78,7 @@ do_deploy:append() {
 
     # now pack kernel and initramfs together
     echo "now pack kernel and initramfs together..."
-    uboot-mkimage  -A arm -O Linux -T multi -n 'HP Touchpad boot' -C none \
+    uboot-mkimage  -A arm -O Linux -T multi -n 'HP Touchpad 3G boot' -C none \
         -e 0 -a 0 -d ${B}/arch/${ARCH}/boot/uImage:${DEPLOY_DIR_IMAGE}/${INITRAMFS_UIMAGE} \
         ${DEPLOYDIR}/uImage-dtb-${KERNEL_IMAGETYPE}
 }

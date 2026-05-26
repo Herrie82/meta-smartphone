@@ -1,0 +1,43 @@
+From 8dd28ef8d002b4f49c38ba605eb2f25e4a2d8554 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Mon, 25 May 2026 20:45:45 +0200
+Subject: [PATCH] freedreno/a2xx: keep perfmon enabled so kernel devfreq sees
+ GPU load
+
+The a2xx kernel devfreq driver reads the RBBM busy perfcounter to estimate
+GPU load for DVFS. That counter only advances while the perfmon is enabled
+via CP_PERFMON_CNTL, which fd2_emit_restore programs every batch. The stock
+code emitted COND(FD_DBG(PERFC), 1) -- i.e. 0 unless the perfc debug flag was
+set -- so during normal rendering the perfmon was frozen every batch, the
+busy counter never moved, devfreq saw ~0 load and parked the GPU at its
+minimum OPP (no upward clock scaling). Emit 1 unconditionally so the counter
+runs and the governor can scale the GPU clock with load.
+
+Upstream-Status: Pending
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_emit.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
+index da5c99188e7..74e5ea312cb 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
+@@ -417,7 +417,14 @@ fd2_emit_restore(struct fd_context *ctx, struct fd_ringbuffer *ring)
+ 
+    /* enable perfcntrs */
+    OUT_PKT0(ring, REG_A2XX_CP_PERFMON_CNTL, 1);
+-   OUT_RING(ring, COND(FD_DBG(PERFC), 1));
++   /*
++    * Keep the perfmon enabled unconditionally (not only under FD_DBG(PERFC)):
++    * the a2xx kernel devfreq driver reads the RBBM busy perfcounter to gauge
++    * GPU load, and that counter only advances while the perfmon is enabled.
++    * The old COND default emitted 0 every batch, freezing the counter, so
++    * devfreq saw ~0 load and parked the GPU at its minimum OPP (no scaling).
++    */
++   OUT_RING(ring, 1);
+ 
+    /* note: perfcntrs don't work without the PM_OVERRIDE bit */
+    OUT_PKT0(ring, REG_A2XX_RBBM_PM_OVERRIDE1, 2);
+-- 
+2.43.0
+

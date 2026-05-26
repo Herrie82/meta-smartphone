@@ -95,8 +95,8 @@ if [ "$DEBUGMODE" = "yes" ]; then
     info "Starting early telnetd for debug..."
     start_telnetd 172.16.42.2
     info "Debug telnet available at 172.16.42.2"
-    info "Waiting 1s for debug connection before continuing boot..."
-    sleep 1
+    info "Waiting 5s for debug connection before continuing boot..."
+    sleep 5
 fi
 
 if [ -f /scripts/local-premount/ORDER ]; then
@@ -155,11 +155,11 @@ else
         info "========================================"
         info "Debug: telnet is still running at 172.16.42.2"
         info "Debug: connect now to inspect rootfs at /rfs"
-        info "Debug: waiting 2s before switch_root..."
+        info "Debug: waiting 10s before switch_root..."
         info "Debug: to skip wait, create /tmp/continue"
         info "========================================"
         waited=0
-        while [ $waited -lt 2 ]; do
+        while [ $waited -lt 10 ]; do
             [ -f /tmp/continue ] && break
             sleep 1
             waited=$((waited + 1))

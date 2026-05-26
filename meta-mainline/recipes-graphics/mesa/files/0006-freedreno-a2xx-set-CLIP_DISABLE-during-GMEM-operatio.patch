@@ -1,0 +1,48 @@
+From fcfdb6bbb1880d9cb8e30aa7081f55682f62fc96 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Tue, 24 Feb 2026 20:22:56 +0100
+Subject: [PATCH 6/7] freedreno/a2xx: set CLIP_DISABLE during GMEM operations
+ for A22X
+
+KGSL sets PA_CL_CLIP_CNTL to 0x00010000 (CLIP_DISABLE bit) during
+GMEM operations (mem2gmem and gmem2mem). This disables clipping
+during tile copy operations where it's not needed.
+
+Add matching behavior for A22X (Adreno 220/225) while keeping
+the original value of 0 for A20X (Adreno 200/205).
+
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+(cherry picked from commit be14a34a32f9fb6f7340c5588b05050fff9bba44)
+
+Upstream-Status: Pending
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+index 7d9a4db6d53..a5218fa86c0 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -172,7 +172,8 @@ prepare_tile_fini_ib(struct fd_batch *batch) assert_dt
+ 
+    OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+    OUT_RING(ring, CP_REG(REG_A2XX_PA_CL_CLIP_CNTL));
+-   OUT_RING(ring, 0x00000000);
++   /* A22X: Set CLIP_DISABLE during GMEM operations per KGSL behavior */
++   OUT_RING(ring, is_a20x(ctx->screen) ? 0x00000000 : 0x00010000);
+ 
+    OUT_PKT3(ring, CP_SET_CONSTANT, 5);
+    OUT_RING(ring, CP_REG(REG_A2XX_PA_CL_VPORT_XSCALE));
+@@ -356,7 +357,8 @@ fd2_emit_tile_mem2gmem(struct fd_batch *batch,
+ 
+    OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+    OUT_RING(ring, CP_REG(REG_A2XX_PA_CL_CLIP_CNTL));
+-   OUT_RING(ring, 0x00000000);
++   /* A22X: Set CLIP_DISABLE during GMEM operations per KGSL behavior */
++   OUT_RING(ring, is_a20x(batch->ctx->screen) ? 0x00000000 : 0x00010000);
+ 
+    if (fd_gmem_needs_restore(batch, tile, FD_BUFFER_DEPTH | FD_BUFFER_STENCIL))
+       emit_mem2gmem_surf(batch, gmem->zsbuf_base[0], &pfb->zsbuf);
+-- 
+2.43.0
+
