@@ -1,0 +1,89 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Thu, 28 May 2026 20:33:30 +0200
+Subject: [PATCH] freedreno/a2xx: emit CP_SET_SHADER_BASES per program-emit for
+ A22X (shader-space-reuse drop workaround)
+
+Captured RD of glmark2 desktop:blur w=4 (the workload that hangs) shows
+mesa packing the entire frame into ONE submit with 642 CP_IM_LOAD_IMMEDIATE
+packets (vs ~116 for binner_test heavy, which doesn't hang).
+
+The a22x hardware has a known erratum (legacy KGSL
+a2xx_drawctxt_draw_workaround): "if the events for shader space reuse get
+dropped, the CP block would wait indefinitely. Sending CP_SET_SHADER_BASES
+packet unblocks the CP from this wait."
+
+We already work around this at TWO levels:
+  1. Kernel a2xx_submit (drm/msm/adreno/a2xx_gpu.c) emits
+     CP_SET_SHADER_BASES at the start of every submit
+  2. Mesa fd2_emit_restore emits it once per batch
+
+For "moderate" workloads (binner_test heavy: ~116 IM_LOAD/submit) these
+two kicks are enough -- the drop queue can't fill up faster than it
+gets cleared. But glmark2 desktop:blur w=4 has 642 IM_LOAD per submit,
+~5.5x denser, and the drop queue fills up MID-BATCH. Observed:
+
+  RBBM_STATUS at hang: 0xc4010310 (VGT + RB + CP + GUI all busy)
+  a2xx_progress() reports NO PROGRESS (RB quad counter frozen)
+  16 hangcheck recoveries in 3 seconds, "1 fps" measurement is
+  actually 1 hangcheck recover per second
+  Subsequent glmark2 scenes inherit degraded GPU state and run
+  12-37x slower than standalone (the "state accumulation" pattern
+  across the suite)
+
+Re-kick the workaround right before every shader IM_LOAD in
+fd2_program_emit so the drop queue stays drained throughout the batch.
+Costs 2 dwords per shader switch (the CP_SET_SHADER_BASES packet),
+fires only at natural program-transition points. For binner_test the
+extra packets sum to ~232 dwords/submit (binner_test 116 IM_LOAD * 2
+dwords); for the glmark2 workload it's ~1284 dwords/submit -- both
+totally negligible (sub-1% of submit dwords).
+
+0x80000180 = adreno_encode_istore_size(512) | pix_shader_start(0x180)
+for a220 -- same value Mesa programs once per batch in fd2_emit_restore
+and the kernel programs once per submit. The packet is idempotent so
+re-emitting it has no side effect other than the desired CP unblock.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Upstream-Status: Pending
+---
+ .../drivers/freedreno/a2xx/fd2_program.c      | 26 +++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_program.c b/src/gallium/drivers/freedreno/a2xx/fd2_program.c
+index 47787337405..cc71b7d0d0d 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_program.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_program.c
+@@ -192,6 +192,32 @@ fd2_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
+    if (is_a22x(ctx->screen)) {
+       OUT_PKT3(ring, CP_INVALIDATE_STATE, 1);
+       OUT_RING(ring, 0x00007fff);  /* Invalidate all state */
++
++      /*
++       * A22X shader-space-reuse drop workaround (per legacy KGSL
++       * a2xx_drawctxt_draw_workaround): "if the events for shader space reuse
++       * get dropped, the CP block would wait indefinitely. Sending
++       * CP_SET_SHADER_BASES packet unblocks the CP from this wait."
++       *
++       * The kernel emits this once per submit (a2xx_submit in adreno/a2xx_gpu.c)
++       * and fd2_emit_restore emits it once per batch. That is sufficient for
++       * binner_test heavy and other workloads with moderate shader-switching
++       * (~100 IM_LOAD per submit), but glmark2 desktop:blur w=4 packs the
++       * whole frame (4 windows x scene + blur + composite) into ONE submit
++       * with 642 IM_LOAD per batch. At that rate the per-submit kick is not
++       * enough -- enough reuse events get dropped that the CP wedges in the
++       * middle of the batch. RBBM_STATUS=0xc4010310 (VGT+RB+CP+GUI all
++       * busy) at the hang; a2xx_progress() correctly reports no-progress.
++       *
++       * Re-kick the workaround right before every shader IM_LOAD so the
++       * drop queue stays drained. Cost: 2 dwords per shader switch, fires
++       * at natural sync points (program transitions), no perf impact.
++       * 0x80000180 = adreno_encode_istore_size(512) | pix_shader_start(0x180)
++       * for a220 -- same value Mesa programs once per batch in
++       * fd2_emit_restore and the kernel programs once per submit.
++       */
++      OUT_PKT3(ring, CP_SET_SHADER_BASES, 1);
++      OUT_RING(ring, 0x80000180);
+    }
+ 
+    emit(ring, MESA_SHADER_VERTEX, vpi,
