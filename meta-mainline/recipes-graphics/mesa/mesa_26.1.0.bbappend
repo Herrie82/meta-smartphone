@@ -53,6 +53,7 @@ SRC_URI:append = " \
     file://0022-freedreno-a2xx-add-fd2_emit_cycprobe-CYCLECTR-perfco.patch \
     file://0023-freedreno-a2xx-place-CYCLECTR-probes-around-per-tile.patch \
     file://0024-freedreno-a2xx-fix-CYCLECTR-probe-slot-0-collision-a.patch \
+    file://0025-freedreno-a2xx-CYCLECTR-use-global-tile-index-not-ti.patch \
 "
 
 # 0010 (aggressive flush) and 0019 (L2 TC invalidate) tested 2026-05-28: both
