@@ -1,0 +1,150 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Thu, 28 May 2026 09:43:20 +0200
+Subject: [PATCH] freedreno/a2xx: add fd2_emit_cycprobe() CYCLECTR perfcounter
+ helper (infra)
+
+Infrastructure-only: enables next-session GPU per-region cycle profiling
+for closing the freedreno-vs-KGSL 4x A220 gap. No probe sites placed yet
+(env-gated and a no-op until FD_CYCPROF=1 + probe calls are added).
+
+Diagnostic context (see project_a220_next_steps_handoff.md): binner_test
+heavy = 1077 ms/frame on freedreno vs 180 ms/frame on KGSL on the same
+A220. Per-phase profile shows ~4x gap across scene/composite/blur, with
+~50% extra cmdstream op volume (SET_CONSTANT 1600 vs 1091, IM_LOAD 116 vs
+78). The op-count delta only accounts for a fraction of the 4x GPU-time
+gap -- the remainder is GPU-internal (stalls / cache / scheduling) and
+needs direct cycle counting to root-cause.
+
+Helper:
+
+  void fd2_emit_cycprobe(struct fd_context *ctx, struct fd_ringbuffer *ring,
+                         unsigned idx);
+
+When FD_CYCPROF=1 is set, emits CP_REG_TO_MEM(0x3e) reading CYCLECTR
+(a2xx reg 0x0ee2, same the legacy KGSL diag dumps) into
+fd2_context::scratch_buf at byte offset idx*4. scratch_buf bumped
+16 -> 512 bytes for up to 128 probe slots; reuses the existing BO
+introduced by 0016 for CACHE_FLUSH_TS verification (zero memory cost
+when FD_CYCPROF is off, which is the default).
+
+Next session: place probes around fd2_emit_tile_init / mem2gmem /
+batch->draw replay / gmem2mem / fini, post-process scratch_buf after
+fence to compute per-region cycle deltas. See handoff doc for file:line
+plan.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Upstream-Status: Pending
+---
+ .../drivers/freedreno/a2xx/fd2_context.c      | 16 ++++---
+ src/gallium/drivers/freedreno/a2xx/fd2_emit.c | 44 +++++++++++++++++++
+ src/gallium/drivers/freedreno/a2xx/fd2_emit.h |  6 +++
+ 3 files changed, 59 insertions(+), 7 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_context.c b/src/gallium/drivers/freedreno/a2xx/fd2_context.c
+index b5929a4ab66..77b6a7e0e39 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_context.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_context.c
+@@ -60,21 +60,23 @@ create_solid_vertexbuf(struct pipe_context *pctx)
+    return prsc;
+ }
+ 
+-/* Create scratch buffer for A22X cache flush timestamp verification.
+- * CACHE_FLUSH_TS writes a timestamp here when the flush completes; the
+- * following WFI then drains the pipeline. This matches the legacy KGSL
+- * pattern for explicit cache flush verification.
++/* Create scratch buffer for A22X cache flush timestamp verification AND
++ * CYCLECTR perfcounter probes (fd2_emit_cycprobe). The cache-flush use
++ * only needs the first 4 bytes; the rest provides up to ~128 cycprobe
++ * slots (FD_CYCPROF=1, env-gated, off by default so this is dead memory
++ * in normal runs). 512 bytes is one cache line worth and trivial cost.
+  */
++#define FD2_SCRATCH_BUF_BYTES 512
+ static struct pipe_resource *
+ create_scratch_buffer(struct pipe_context *pctx)
+ {
+-   static const uint32_t init_data[4] = {0, 0, 0, 0};
++   static const uint32_t init_data[FD2_SCRATCH_BUF_BYTES / 4] = {0};
+ 
+    struct pipe_resource *prsc =
+       pipe_buffer_create(pctx->screen, PIPE_BIND_CUSTOM, PIPE_USAGE_STREAM,
+-                         sizeof(init_data));
++                         FD2_SCRATCH_BUF_BYTES);
+    if (prsc)
+-      pipe_buffer_write(pctx, prsc, 0, sizeof(init_data), init_data);
++      pipe_buffer_write(pctx, prsc, 0, FD2_SCRATCH_BUF_BYTES, init_data);
+ 
+    return prsc;
+ }
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
+index 05a69b12a71..309a5be021f 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
+@@ -384,6 +384,50 @@ fd2_emit_state(struct fd_context *ctx, const enum fd_dirty_3d_state dirty)
+       emit_textures(ring, ctx);
+ }
+ 
++/* ------------------------------------------------------------------
++ * fd2_emit_cycprobe(ring, idx) -- emit a CP_REG_TO_MEM that copies
++ * the GPU CYCLECTR (a2xx reg 0x0ee2, the GPU cycle counter that KGSL
++ * diag also reads) into ctx->scratch_buf at byte offset (idx*4).
++ *
++ * Gated by env FD_CYCPROF=1; no-op otherwise. Used for per-region GPU
++ * cycle timing: insert probes at known cmdstream points, after fence,
++ * read scratch_buf and compute deltas.
++ *
++ * Probe locations to be added next session (see next-steps handoff):
++ *   - fd2_emit_tile_init start (batch begin)
++ *   - per-tile start / after mem2gmem / after batch->draw / after gmem2mem
++ *   - fd2_emit_tile_fini end (batch end)
++ *
++ * For now this is infrastructure only. Caller passes a unique idx per
++ * probe site; scratch_buf is sized in fd2_context_create for up to ~128
++ * probes (512 bytes).
++ * ------------------------------------------------------------------ */
++void
++fd2_emit_cycprobe(struct fd_context *ctx, struct fd_ringbuffer *ring,
++                  unsigned idx)
++{
++   static int cached = -1;
++   if (cached < 0) {
++      const char *e = getenv("FD_CYCPROF");
++      cached = (e && atoi(e)) ? 1 : 0;
++   }
++   if (!cached)
++      return;
++
++   struct fd2_context *fd2_ctx = fd2_context(ctx);
++   if (!fd2_ctx->scratch_buf)
++      return;
++   struct fd_bo *bo = fd_resource(fd2_ctx->scratch_buf)->bo;
++
++   /* CP_REG_TO_MEM 0x3e: reads register, writes to memory.
++    *   payload[0] = reg address
++    *   payload[1] = memory address (via OUT_RELOC). */
++   OUT_PKT3(ring, CP_REG_TO_MEM, 2);
++   OUT_RING(ring, 0x0ee2);  /* CYCLECTR (a2xx GPU cycle counter; same reg
++                             * KGSL diag dumps as CYCLECTR[0x0ee2]) */
++   OUT_RELOC(ring, bo, idx * 4, 0, 0);
++}
++
+ /* emit per-context initialization:
+  */
+ void
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_emit.h b/src/gallium/drivers/freedreno/a2xx/fd2_emit.h
+index 5b2a8f2cd36..f4b69bcea49 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_emit.h
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_emit.h
+@@ -28,6 +28,12 @@ void fd2_emit_state(struct fd_context *ctx,
+                     const enum fd_dirty_3d_state dirty) assert_dt;
+ void fd2_emit_restore(struct fd_context *ctx, struct fd_ringbuffer *ring);
+ 
++/* CYCLECTR perfcounter probe (env FD_CYCPROF=1 to enable; no-op otherwise).
++ * Writes the GPU cycle counter (reg 0x0ee2) into fd2_context::scratch_buf
++ * at byte offset (idx*4). See fd2_emit.c for usage notes. */
++void fd2_emit_cycprobe(struct fd_context *ctx, struct fd_ringbuffer *ring,
++                       unsigned idx);
++
+ void fd2_emit_init_screen(struct pipe_screen *pscreen);
+ void fd2_emit_init(struct pipe_context *pctx);
+ 

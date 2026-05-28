@@ -50,6 +50,7 @@ SRC_URI:append = " \
     file://0016-freedreno-a2xx-use-CACHE_FLUSH_TS-WFI-per-draw-on-A2.patch \
     file://0018-freedreno-a2xx-move-A22X-cache-flush-drain-from-per-.patch \
     file://0020-freedreno-a2xx-skip-per-draw-cache-flush-on-A22X-KGS.patch \
+    file://0022-freedreno-a2xx-add-fd2_emit_cycprobe-CYCLECTR-perfco.patch \
 "
 
 # 0010 (aggressive flush) and 0019 (L2 TC invalidate) tested 2026-05-28: both
