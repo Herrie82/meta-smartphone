@@ -42,11 +42,11 @@ Upstream-Status: Pending
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 ---
- .../drivers/freedreno/freedreno_gmem.c             | 122 +++++++++++++++++++--
- 1 file changed, 117 insertions(+), 5 deletions(-)
+ src/gallium/drivers/freedreno/freedreno_gmem.c | XX +++++++
+ 1 file changed
 
 diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
-index 9f7124dfdee..e19de1b6a36 100644
+index 9f7124dfdee..6dadfe907ed 100644
 --- a/src/gallium/drivers/freedreno/freedreno_gmem.c
 +++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
 @@ -590,10 +590,40 @@ found:
@@ -99,7 +99,7 @@ index 9f7124dfdee..e19de1b6a36 100644
        struct fd_tile *tile = &gmem->tile[i];
  
        trace_start_tile(&batch->trace, batch->gmem, tile->bin_h, tile->yoff, tile->bin_w,
-@@ -632,6 +662,65 @@ render_tiles(struct fd_batch *batch, struct fd_gmem_stateobj *gmem) assert_dt
+@@ -632,6 +662,82 @@ render_tiles(struct fd_batch *batch, struct fd_gmem_stateobj *gmem) assert_dt
  
        /* emit gmem2mem to transfer tile back to system memory: */
        ctx->emit_tile_gmem2mem(batch, tile);
@@ -131,13 +131,11 @@ index 9f7124dfdee..e19de1b6a36 100644
 +         if (sub_fence)
 +            fd_fence_del(sub_fence);
 +
-+         /* Tear down the old submit's references. Keep batch->draw alive
-+          * via its own refcount; new submit will reloc/attach its BO on
-+          * the next emit_ib(). */
-+         fd_submit_del(batch->submit);
-+         batch->submit = NULL;
-+         fd_ringbuffer_del(batch->gmem);
-+         batch->gmem = NULL;
++         /* Release non-primary streaming rings explicitly (they have their
++          * own refcounts and would leak if we only del'd the submit).
++          * batch->gmem is the submit's PRIMARY ring -- fd_submit_del handles
++          * its release internally; do NOT del it manually here or we'd
++          * double-free. */
 +         if (batch->tile_store) {
 +            fd_ringbuffer_del(batch->tile_store);
 +            batch->tile_store = NULL;
@@ -146,6 +144,13 @@ index 9f7124dfdee..e19de1b6a36 100644
 +            fd_ringbuffer_del(batch->prologue);
 +            batch->prologue = NULL;
 +         }
++
++         /* Drop the old submit (releases primary ring + drops references
++          * the submit was holding on attached BOs). batch->draw lives on
++          * via its own refcount. */
++         fd_submit_del(batch->submit);
++         batch->submit = NULL;
++         batch->gmem = NULL;  /* was del'd as primary by fd_submit_del */
 +
 +         /* Allocate a fresh submit + primary ring for the next sub-batch. */
 +         batch->submit = fd_submit_new(ctx->pipe);
@@ -156,6 +161,18 @@ index 9f7124dfdee..e19de1b6a36 100644
 +         /* Re-attach private BOs (matches fd_batch_init alloc behaviour). */
 +         for (unsigned p = 0; p < ctx->num_private_bos; p++)
 +            fd_ringbuffer_attach_bo(batch->gmem, ctx->private_bos[p]);
++
++         /* Re-attach every resource the batch references -- the user's
++          * draws inside batch->draw have relocs pointing at textures,
++          * vertex buffers, etc. that were attached to the OLD submit
++          * when the draws were emitted. The new submit needs to know
++          * about them too, or the kernel will reject the submit (or
++          * worse, GPU accesses freed/unmapped memory). */
++         set_foreach (batch->resources, entry) {
++            struct fd_resource *rsc = (struct fd_resource *)entry->key;
++            if (rsc->bo)
++               fd_ringbuffer_attach_bo(batch->gmem, rsc->bo);
++         }
 +
 +         /* Re-emit the per-batch state setup at the start of the new
 +          * sub-submit. This rebuilds batch->tile_store + batch->prologue
