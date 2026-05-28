@@ -1,0 +1,167 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Thu, 28 May 2026 22:00:00 +0200
+Subject: [PATCH] freedreno: bounded tiles per submit (env-gated FD_BOUNDED_TILES)
+ for A22X glmark2 desktop:blur hang fix
+
+Captured RD of glmark2 desktop:blur w=4 (mesa 0029 patch removed the
+FD_RD_DUMP fence-wait so the hanging submit could be dumped) showed mesa
+packing the entire frame's work (4 windows x scene + blur + composite)
+into ONE submit with 321 DRAW_INDX + 642 IM_LOAD + 150 EDRAM_COPY
+resolves. At MAX GPU clock this batch genuinely wedges the a220 CP:
+
+  RBBM_STATUS at hang: 0xc4010310 (VGT + RB + CP + GUI all busy)
+  a2xx_progress() reports NO PROGRESS (RB quad counter frozen)
+  Real GPU pipeline deadlock, not slow rendering
+
+16 hangcheck recoveries per 3-second blur run = "1 fps" measurement is
+1 recovery per second, not real rendering. Subsequent glmark2 scenes
+inherit the degraded GPU state (12-37x slower than standalone). This is
+the "state accumulation" symptom across the full suite.
+
+memory/reference_kgsl_vs_freedreno_heavy_scene predicted this exact
+issue: "The proper fix is to KEEP EDRAM tiling and BOUND the submit/
+fence size (split fd_gmem_render_tiles so each submit covers few tiles,
+each <2s) -- the KGSL model."
+
+Implementation: env var FD_BOUNDED_TILES (default 0 = disabled). When
+set, render_tiles() inserts a sub-submit boundary after every N tiles:
+flushes the current batch->gmem ring, allocates a fresh
+batch->submit + ringbuffers, re-emits emit_tile_init to restore state,
+continues the loop. Each sub-submit gets the kernel's per-submit
+CP_SET_SHADER_BASES shader-space-reuse workaround re-kicked naturally,
+AND each sub-submit's fence is independently bounded by hangcheck.
+
+The user's draw IB (batch->draw) holds its own refcount on its BO so it
+survives the old submit's flush; the new submit attaches the BO on
+first emit_ib via the existing reloc path.
+
+Default behavior unchanged when FD_BOUNDED_TILES is unset.
+
+Upstream-Status: Pending
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ .../drivers/freedreno/freedreno_gmem.c             | 122 +++++++++++++++++++--
+ 1 file changed, 117 insertions(+), 5 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
+index 9f7124dfdee..e19de1b6a36 100644
+--- a/src/gallium/drivers/freedreno/freedreno_gmem.c
++++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
+@@ -590,10 +590,40 @@ found:
+  * GMEM render pass
+  */
+ 
++/*
++ * A22X bounded-submission helper: returns the configured tiles-per-submit
++ * cap, or 0 if disabled (default). Env-gated via FD_BOUNDED_TILES so the
++ * default codepath is byte-identical to upstream.
++ *
++ * When set, render_tiles() inserts a sub-submit boundary after every N
++ * tiles: closes the current batch->gmem ring with emit_tile_fini, flushes
++ * it via fd_submit_flush, then allocates a fresh batch->submit + ringbuffers
++ * and re-emits emit_tile_init to restore state before continuing the loop.
++ *
++ * Motivation: glmark2 desktop:blur w=4 packs 150+ tile resolves into one
++ * submit; at MAX clock the resulting batch genuinely wedges the a220 CP
++ * mid-execution (RBBM_STATUS=0xc4010310, a2xx_progress reports no-progress).
++ * Splitting into smaller submits keeps each individual fence within the
++ * hangcheck timeout AND naturally re-kicks the kernel's per-submit
++ * CP_SET_SHADER_BASES shader-space-reuse workaround.
++ */
++static unsigned
++bounded_tiles_per_submit(void)
++{
++   static int cached = -1;
++   if (cached < 0) {
++      const char *e = getenv("FD_BOUNDED_TILES");
++      cached = (e && atoi(e) > 0) ? atoi(e) : 0;
++   }
++   return (unsigned)cached;
++}
++
+ static void
+ render_tiles(struct fd_batch *batch, struct fd_gmem_stateobj *gmem) assert_dt
+ {
+    struct fd_context *ctx = batch->ctx;
++   const unsigned nbins = gmem->nbins_x * gmem->nbins_y;
++   const unsigned bound = bounded_tiles_per_submit();
+    int i;
+ 
+    simple_mtx_lock(&ctx->gmem_lock);
+@@ -603,7 +633,7 @@ render_tiles(struct fd_batch *batch, struct fd_gmem_stateobj *gmem) assert_dt
+    if (batch->restore)
+       ctx->stats.batch_restore++;
+ 
+-   for (i = 0; i < (gmem->nbins_x * gmem->nbins_y); i++) {
++   for (i = 0; i < (int)nbins; i++) {
+       struct fd_tile *tile = &gmem->tile[i];
+ 
+       trace_start_tile(&batch->trace, batch->gmem, tile->bin_h, tile->yoff, tile->bin_w,
+@@ -632,6 +662,65 @@ render_tiles(struct fd_batch *batch, struct fd_gmem_stateobj *gmem) assert_dt
+ 
+       /* emit gmem2mem to transfer tile back to system memory: */
+       ctx->emit_tile_gmem2mem(batch, tile);
++
++      /*
++       * FD_BOUNDED_TILES: after every N tiles (and provided we have more
++       * tiles to come), flush the current sub-submit and start a fresh one.
++       * The final tail of tiles falls through to the post-loop emit_tile_fini
++       * + the natural batch flush in fd_gmem_render_tiles -> flush_ring.
++       *
++       * NOTE: this codepath relies on batch->draw being safe to reference from
++       * a freshly-created submit via the existing emit_ib reloc path. The user's
++       * draw IB BO survives the old submit's flush because batch->draw holds
++       * its own refcount; the new submit gets the BO attached on first emit_ib.
++       */
++      if (bound && (i + 1) < (int)nbins && ((i + 1) % bound) == 0) {
++         /* Close out the current sub-submit's per-batch tile teardown. */
++         if (ctx->emit_tile_fini)
++            ctx->emit_tile_fini(batch);
++
++         /* Flush the current submit and discard its fence -- only the
++          * FINAL sub-submit's fence is exported to the app via batch->fence
++          * (handled in flush_ring after render_tiles returns). */
++         bool use_fence_fd = false;
++         if (batch->fence)
++            use_fence_fd = batch->fence->use_fence_fd;
++         struct fd_fence *sub_fence =
++            fd_submit_flush(batch->submit, batch->in_fence_fd, use_fence_fd);
++         if (sub_fence)
++            fd_fence_del(sub_fence);
++
++         /* Tear down the old submit's references. Keep batch->draw alive
++          * via its own refcount; new submit will reloc/attach its BO on
++          * the next emit_ib(). */
++         fd_submit_del(batch->submit);
++         batch->submit = NULL;
++         fd_ringbuffer_del(batch->gmem);
++         batch->gmem = NULL;
++         if (batch->tile_store) {
++            fd_ringbuffer_del(batch->tile_store);
++            batch->tile_store = NULL;
++         }
++         if (batch->prologue) {
++            fd_ringbuffer_del(batch->prologue);
++            batch->prologue = NULL;
++         }
++
++         /* Allocate a fresh submit + primary ring for the next sub-batch. */
++         batch->submit = fd_submit_new(ctx->pipe);
++         batch->gmem = fd_submit_new_ringbuffer(batch->submit, 0x100000,
++                                                FD_RINGBUFFER_PRIMARY |
++                                                FD_RINGBUFFER_GROWABLE);
++
++         /* Re-attach private BOs (matches fd_batch_init alloc behaviour). */
++         for (unsigned p = 0; p < ctx->num_private_bos; p++)
++            fd_ringbuffer_attach_bo(batch->gmem, ctx->private_bos[p]);
++
++         /* Re-emit the per-batch state setup at the start of the new
++          * sub-submit. This rebuilds batch->tile_store + batch->prologue
++          * as needed and restores all the per-batch register state. */
++         ctx->emit_tile_init(batch);
++      }
+    }
+ 
+    if (ctx->emit_tile_fini)

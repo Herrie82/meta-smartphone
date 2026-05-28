@@ -55,6 +55,7 @@ SRC_URI:append = " \
     file://0024-freedreno-a2xx-fix-CYCLECTR-probe-slot-0-collision-a.patch \
     file://0025-freedreno-a2xx-CYCLECTR-use-global-tile-index-not-ti.patch \
     file://0029-freedreno-drm-msm-don-t-fence-wait-in-FD_RD_DUMP-ful.patch \
+    file://0031-freedreno-bounded-tiles-per-submit-env-gated-FD_BOUN.patch \
 "
 
 # file://0030-freedreno-a2xx-emit-CP_SET_SHADER_BASES-per-program-.patch
