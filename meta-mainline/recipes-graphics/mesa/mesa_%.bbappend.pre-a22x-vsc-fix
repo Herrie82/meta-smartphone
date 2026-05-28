@@ -33,27 +33,26 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
 PACKAGECONFIG:append = " freedreno"
 
+# 2026-05-14: slimmed back to pre-binning baseline after Fork A/B (0007) was
+# identified as causing surface-manager QSGRenderThread to hang the GPU on
+# every Qt frame, with cascading hangcheck-loop that wedged the device.
+#
+# Dropped 0006-0020 (all binning + cycle-engineering experiments).  All
+# cycle-engineering interventions tested via 0007-0020 were falsified - see
+# project_cycle_register_0xee2 memory note.  Keep only the stabilization
+# patches that have known-positive value:
+#   0001 - is_a22x() helper
+#   0002 - scheduler instruction limit (needed by user shaders)
+#   0003 - CP_WAIT_FOR_IDLE at start of fd2_emit_restore
+#   0004 - fix non-fast-clear color on A22X
+#   0005 - CACHE_FLUSH_AND_INV_EVENT at start of fd2_emit_restore
+#
 SRC_URI:append = " \
     file://0001-freedreno-add-is_a22x-helper-for-Adreno-220-225.patch \
     file://0002-freedreno-a2xx-increase-scheduler-instruction-limit.patch \
     file://0003-freedreno-a2xx-WAIT_FOR_IDLE-at-start-of-fd2_emit_re.patch \
     file://0004-freedreno-a2xx-fix-non-fast-clear-color-on-A22X-writ.patch \
     file://0005-freedreno-a2xx-cache-flush-invalidate-at-batch-start.patch \
-    file://0006-freedreno-a2xx-write-per-tile-VGT_CURRENT_BIN_ID-for.patch \
-    file://0007-freedreno-a2xx-A22X-Fork-A-B-enable-hw_binning-with-.patch \
-    file://0008-freedreno-a2xx-diagnostic-VSC-pipe-BO-dump-FD2_VSC_D.patch \
-    file://0009-freedreno-a2xx-ir2_nir-skip-A20X-memexport-CFs-for-A.patch \
-    file://0010-freedreno-a2xx-CP_SCRATCH-milestone-markers-for-Fork.patch \
-    file://0011-freedreno-a2xx-A22X-Fork-A-B-baseline-bisect-env-tog.patch \
-    file://0012-freedreno-a2xx-A22X-CP_SET_BIN_DATA-visibility-consu.patch \
-    file://0013-freedreno-A22X-per-render-multi-flush-v5a-zero-verte.patch \
-    file://0014-freedreno-a2xx-emit-end-of-tile-loop-CP_EVENT_WRITE-.patch \
-    file://0015-freedreno-a2xx-three-env-gated-bisects-for-0x0ee2-cy.patch \
-    file://0016-freedreno-A22X-per-draw-DEALLOC-bisect-Gemini-round-.patch \
-    file://0017-freedreno-a2xx-A22X-inline-TC_CNTL_STATUS-L2_INVALID.patch \
-    file://0018-freedreno-a2xx-split-A22X-binning-IB-into-separate-M.patch \
-    file://0019-freedreno-a2xx-emit-CP_REG_TO_MEM-for-VSC_PIPE-regs-.patch \
-    file://0020-freedreno-a2xx-VSC-reg-save-also-testable-at-START-o.patch \
 "
 # 0098 (NEW): A22X webOS-style CP_SET_BIN_DATA visibility-stream consume.
 # Adds vsc_size_mem BO, writes A220_VSC_SIZE_ADDRESS in prelude, and

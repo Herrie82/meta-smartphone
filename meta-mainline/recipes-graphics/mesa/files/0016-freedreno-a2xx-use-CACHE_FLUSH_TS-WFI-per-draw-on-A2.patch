@@ -1,0 +1,153 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Wed, 27 May 2026 13:20:17 +0200
+Subject: [PATCH] freedreno/a2xx: use CACHE_FLUSH_TS + WFI per draw on A22X
+
+The clean series carried the a20x cache-flush behaviour into A22X:
+emit_cacheflush() emitted 12x async CACHE_FLUSH events with NO pipeline
+drain. On Adreno 220 that lets the per-tile gmem2mem resolve race ahead
+of the draw's GMEM (EDRAM) writes on heavy multi-bin scenes, which shows
+up as the back-end "stall within a draw" and a hard GPU lockup on the
+glmark-style desktop blur (reproduced with binner_test at >2 bins, and
+seen even with FD_MESA_DEBUG=nobin, confirming it is the tile back-end,
+not the binner).
+
+Restore the A22X path that was developed on the experimental branch but
+dropped during curation: use CACHE_FLUSH_TS to write a timestamp to a
+scratch BO when the flush completes, then OUT_WFI to drain the whole
+pipeline (including that write) before continuing. This matches the
+legacy KGSL CACHE_FLUSH_TS pattern and serialises draw -> resolve.
+
+a20x keeps the original 12x async CACHE_FLUSH.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Upstream-Status: Pending
+---
+ .../drivers/freedreno/a2xx/fd2_context.c      | 26 +++++++++++++++
+ .../drivers/freedreno/a2xx/fd2_context.h      |  8 +++++
+ src/gallium/drivers/freedreno/a2xx/fd2_draw.c | 33 +++++++++++++++----
+ 3 files changed, 61 insertions(+), 6 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_context.c b/src/gallium/drivers/freedreno/a2xx/fd2_context.c
+index df59fdb7bd1..b5929a4ab66 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_context.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_context.c
+@@ -25,6 +25,9 @@ fd2_context_destroy(struct pipe_context *pctx) in_dt
+    if (fd2_ctx->vsc_size_mem)
+       fd_bo_del(fd2_ctx->vsc_size_mem);
+ 
++   if (fd2_ctx->scratch_buf)
++      pipe_resource_reference(&fd2_ctx->scratch_buf, NULL);
++
+    fd_context_destroy(pctx);
+    free(pctx);
+ }
+@@ -57,6 +60,25 @@ create_solid_vertexbuf(struct pipe_context *pctx)
+    return prsc;
+ }
+ 
++/* Create scratch buffer for A22X cache flush timestamp verification.
++ * CACHE_FLUSH_TS writes a timestamp here when the flush completes; the
++ * following WFI then drains the pipeline. This matches the legacy KGSL
++ * pattern for explicit cache flush verification.
++ */
++static struct pipe_resource *
++create_scratch_buffer(struct pipe_context *pctx)
++{
++   static const uint32_t init_data[4] = {0, 0, 0, 0};
++
++   struct pipe_resource *prsc =
++      pipe_buffer_create(pctx->screen, PIPE_BIND_CUSTOM, PIPE_USAGE_STREAM,
++                         sizeof(init_data));
++   if (prsc)
++      pipe_buffer_write(pctx, prsc, 0, sizeof(init_data), init_data);
++
++   return prsc;
++}
++
+ struct pipe_context *
+ fd2_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
+ {
+@@ -99,6 +121,10 @@ fd2_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
+    if (is_a22x(screen))
+       fd2_ctx->vsc_size_mem = fd_bo_new(screen->dev, 0x1000, 0, "vsc_size");
+ 
++   /* A22X: scratch buffer for CACHE_FLUSH_TS timestamp verification */
++   if (is_a22x(screen))
++      fd2_ctx->scratch_buf = create_scratch_buffer(pctx);
++
+    fd2_query_context_init(pctx);
+ 
+    return pctx;
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_context.h b/src/gallium/drivers/freedreno/a2xx/fd2_context.h
+index 56c7d98c804..e38f944e1f7 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_context.h
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_context.h
+@@ -24,6 +24,14 @@ struct fd2_context {
+     * Only allocated/used on a22x. See fd2_gmem.c emit_vsc_config().
+     */
+    struct fd_bo *vsc_size_mem;
++
++   /* Scratch buffer for A22X cache flush timestamp verification.
++    * CACHE_FLUSH_TS writes a timestamp here when the flush completes,
++    * and the following WFI drains the pipeline so the per-tile resolve
++    * can't race ahead of the draw's GMEM writes. Only used on a22x.
++    */
++   struct pipe_resource *scratch_buf;
++   uint32_t cache_flush_seqno;
+ };
+ 
+ static inline struct fd2_context *
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
+index bd0296b0e7e..63be1e8c415 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
+@@ -30,13 +30,34 @@ pack_rgba(enum pipe_format format, const float *rgba)
+ }
+ 
+ static void
+-emit_cacheflush(struct fd_ringbuffer *ring)
++emit_cacheflush(struct fd_context *ctx, struct fd_ringbuffer *ring)
+ {
+-   unsigned i;
++   struct fd2_context *fd2_ctx = fd2_context(ctx);
++
++   if (is_a22x(ctx->screen) && fd2_ctx->scratch_buf) {
++      /* A22X: CACHE_FLUSH_TS writes a timestamp to memory when the flush
++       * completes; the following WFI drains the whole pipeline (including
++       * that write). The plain 12x async CACHE_FLUSH below does NOT wait,
++       * which on A220 lets the per-tile gmem2mem resolve race ahead of the
++       * draw's GMEM writes on heavy multi-bin scenes -> stale data / wedge.
++       * This mirrors the legacy KGSL CACHE_FLUSH_TS pattern.
++       */
++      struct fd_bo *scratch_bo = fd_resource(fd2_ctx->scratch_buf)->bo;
++      uint32_t seqno = ++fd2_ctx->cache_flush_seqno;
+ 
+-   for (i = 0; i < 12; i++) {
+-      OUT_PKT3(ring, CP_EVENT_WRITE, 1);
+-      OUT_RING(ring, CACHE_FLUSH);
++      OUT_PKT3(ring, CP_EVENT_WRITE, 3);
++      OUT_RING(ring, CACHE_FLUSH_TS);
++      OUT_RELOC(ring, scratch_bo, 0, 0, 0); /* address to write timestamp */
++      OUT_RING(ring, seqno);                /* value to write */
++
++      OUT_WFI(ring);
++   } else {
++      unsigned i;
++      /* A20X: async cache flush (original behavior) */
++      for (i = 0; i < 12; i++) {
++         OUT_PKT3(ring, CP_EVENT_WRITE, 1);
++         OUT_RING(ring, CACHE_FLUSH);
++      }
+    }
+ }
+ 
+@@ -141,7 +162,7 @@ draw_impl(struct fd_context *ctx, const struct pipe_draw_info *info,
+       OUT_RING(ring, 0x00000000);
+    }
+ 
+-   emit_cacheflush(ring);
++   emit_cacheflush(ctx, ring);
+ }
+ 
+ static bool

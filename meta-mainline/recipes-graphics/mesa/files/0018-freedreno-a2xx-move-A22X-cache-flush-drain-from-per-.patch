@@ -1,0 +1,128 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Wed, 27 May 2026 22:52:16 +0200
+Subject: [PATCH] freedreno/a2xx: move A22X cache-flush drain from per-draw to
+ per-tile
+
+Patch 0016 fixed the multi-bin GMEM tiling stall/corruption by making the
+A22X cache flush synchronous (CACHE_FLUSH_TS + WFI) -- but it did so PER
+DRAW, in draw_impl. On a heavy multi-bin scene that is draws x nbins full
+pipeline stalls, which crippled performance: binner_test 1024 (16-bin
+tiling) measured ~0.54 fps (1.84s/frame), and glmark2 -b desktop ~1-2 fps,
+where the pre-0016 (fast but racy) path had been ~10-12 fps.
+
+The resolve race only needs the tile's draws drained before the gmem2mem
+resolve READS gmem -- a per-TILE boundary, not per-draw. So:
+
+  - emit_cacheflush() (per draw): revert to the light async 12x CACHE_FLUSH
+    (no pipeline drain), same as a20x.
+  - prepare_tile_fini_ib(): upgrade the existing pre-EDRAM_COPY OUT_WFI to
+    CACHE_FLUSH_TS + WFI for A22X. This IB is built once and replayed per
+    tile, so the strong drain runs once per tile, draining that tile's
+    draws before its resolve. Cuts drains from draws*nbins to nbins.
+
+Keeps 0016's correctness (draws serialised before resolve) while removing
+the per-draw stall. Validate blur ping-pong correctness + heavy-scene fps.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Upstream-Status: Pending
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_draw.c | 42 +++++++------------
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 22 ++++++++--
+ 2 files changed, 32 insertions(+), 32 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
+index 63be1e8c415..b73fd0a4940 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
+@@ -30,34 +30,20 @@ pack_rgba(enum pipe_format format, const float *rgba)
+ }
+ 
+ static void
+-emit_cacheflush(struct fd_context *ctx, struct fd_ringbuffer *ring)
++emit_cacheflush(struct fd_ringbuffer *ring)
+ {
+-   struct fd2_context *fd2_ctx = fd2_context(ctx);
+-
+-   if (is_a22x(ctx->screen) && fd2_ctx->scratch_buf) {
+-      /* A22X: CACHE_FLUSH_TS writes a timestamp to memory when the flush
+-       * completes; the following WFI drains the whole pipeline (including
+-       * that write). The plain 12x async CACHE_FLUSH below does NOT wait,
+-       * which on A220 lets the per-tile gmem2mem resolve race ahead of the
+-       * draw's GMEM writes on heavy multi-bin scenes -> stale data / wedge.
+-       * This mirrors the legacy KGSL CACHE_FLUSH_TS pattern.
+-       */
+-      struct fd_bo *scratch_bo = fd_resource(fd2_ctx->scratch_buf)->bo;
+-      uint32_t seqno = ++fd2_ctx->cache_flush_seqno;
+-
+-      OUT_PKT3(ring, CP_EVENT_WRITE, 3);
+-      OUT_RING(ring, CACHE_FLUSH_TS);
+-      OUT_RELOC(ring, scratch_bo, 0, 0, 0); /* address to write timestamp */
+-      OUT_RING(ring, seqno);                /* value to write */
+-
+-      OUT_WFI(ring);
+-   } else {
+-      unsigned i;
+-      /* A20X: async cache flush (original behavior) */
+-      for (i = 0; i < 12; i++) {
+-         OUT_PKT3(ring, CP_EVENT_WRITE, 1);
+-         OUT_RING(ring, CACHE_FLUSH);
+-      }
++   unsigned i;
++   /* Light async cache flush per draw (no pipeline drain) on BOTH a20x and
++    * a22x. The STRONG CACHE_FLUSH_TS+WFI that serialises a tile's draws
++    * against its gmem2mem resolve is emitted ONCE PER TILE in
++    * prepare_tile_fini_ib (a22x), not per draw. Draining the whole pipeline
++    * per draw (the original A22X fix) was correct but crippled heavy
++    * multi-bin scenes: draws x 16 tiles full pipeline stalls -> ~1 fps. The
++    * resolve race only needs the draws drained before the resolve READS
++    * gmem, which is a per-tile boundary, not a per-draw one. */
++   for (i = 0; i < 12; i++) {
++      OUT_PKT3(ring, CP_EVENT_WRITE, 1);
++      OUT_RING(ring, CACHE_FLUSH);
+    }
+ }
+ 
+@@ -162,7 +148,7 @@ draw_impl(struct fd_context *ctx, const struct pipe_draw_info *info,
+       OUT_RING(ring, 0x00000000);
+    }
+ 
+-   emit_cacheflush(ctx, ring);
++   emit_cacheflush(ring);
+ }
+ 
+ static bool
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+index 6f49e6f4fc7..7699326c081 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -189,11 +189,25 @@ prepare_tile_fini_ib(struct fd_batch *batch) assert_dt
+    OUT_RING(ring, fui((float)gmem->bin_h / 2.0f)); /* YSCALE */
+    OUT_RING(ring, fui((float)gmem->bin_h / 2.0f)); /* YOFFSET */
+ 
+-   /* A22X: WFI before changing RB_MODECONTROL to ensure pipeline is idle.
+-    * Mode transitions between COLOR_DEPTH and EDRAM_COPY require sync.
+-    */
+-   if (!is_a20x(ctx->screen))
++   /* A22X: STRONG drain before the EDRAM_COPY resolve. The tile's draws must
++    * have fully landed in GMEM before the resolve reads it back; a plain
++    * OUT_WFI is insufficient on A220 (it does not wait for VGT DMA). Use
++    * CACHE_FLUSH_TS + WFI, ONCE per tile here -- this is the per-tile
++    * boundary that the resolve race actually needs, and it REPLACES the
++    * per-draw drain (which serialised every draw and crippled heavy
++    * multi-bin scenes to ~1 fps). The mode transition COLOR_DEPTH<->EDRAM_COPY
++    * also needs this sync. (This IB is built once and replayed per tile, so
++    * the flush runs once per tile, draining that tile's draws.) */
++   if (!is_a20x(ctx->screen)) {
++      if (fd2_ctx->scratch_buf) {
++         struct fd_bo *scratch_bo = fd_resource(fd2_ctx->scratch_buf)->bo;
++         OUT_PKT3(ring, CP_EVENT_WRITE, 3);
++         OUT_RING(ring, CACHE_FLUSH_TS);
++         OUT_RELOC(ring, scratch_bo, 0, 0, 0); /* timestamp address */
++         OUT_RING(ring, ++fd2_ctx->cache_flush_seqno);
++      }
+       OUT_WFI(ring);
++   }
+ 
+    OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+    OUT_RING(ring, CP_REG(REG_A2XX_RB_MODECONTROL));
