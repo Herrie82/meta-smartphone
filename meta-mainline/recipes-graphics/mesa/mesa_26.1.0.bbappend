@@ -54,8 +54,14 @@ SRC_URI:append = " \
     file://0023-freedreno-a2xx-place-CYCLECTR-probes-around-per-tile.patch \
     file://0024-freedreno-a2xx-fix-CYCLECTR-probe-slot-0-collision-a.patch \
     file://0025-freedreno-a2xx-CYCLECTR-use-global-tile-index-not-ti.patch \
-    file://0026-freedreno-a2xx-cycprobe-to-GPU-timestamps-via-CACHE_.patch \
 "
+# 0026 (CACHE_FLUSH_TS | TIMESTAMP) DISABLED 2026-05-28: the TIMESTAMP flag
+# (0x40000000 in the EVENT dword) is not recognized by a2xx PKT3 CP_EVENT_WRITE.
+# Emitting it wedges the GPU/CP (device became unreachable on first test).
+# The flag was added in later adreno generations. Keep the patch on disk for
+# reference but do not apply.
+#    file://0026-freedreno-a2xx-cycprobe-to-GPU-timestamps-via-CACHE_.patch
+
 
 # 0010 (aggressive flush) and 0019 (L2 TC invalidate) tested 2026-05-28: both
 # DROPPED. Neither fixed the desktop:blur FPS 1 issue. 0010 has measured
