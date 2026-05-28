@@ -1,0 +1,111 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Thu, 28 May 2026 08:25:33 +0200
+Subject: [PATCH] freedreno/a2xx: hoist per-batch-invariant state to
+ batch->prologue
+
+Apples-to-apples cmdstream comparison vs legacy KGSL (2026-05-28) on the
+same Adreno 220 showed freedreno emits ~1.5x more SET_CONSTANT and IM_LOAD
+per frame, and ~5x more total state writes accounting for replay. Cause:
+fd2_emit_state() writes ALL dirty state -- including FIRST-draw invariants
+(shaders, blend, depth, raster, viewport, textures) -- into batch->draw,
+which render_tiles() then replays once PER TILE (16x for the heavy 16-bin
+scene). KGSL emits per-batch invariant state in a per-batch HEADER that
+runs once, with only per-draw deltas in the per-tile loop.
+
+batch->prologue already exists in fd_batch as "preamble cmdstream
+(executed once before first tile)" -- used by a5xx/a6xx for blitter setup
+and gmem invalidation but not by a2xx at all. Wire it up:
+
+  1. fd2_emit_state(): on the FIRST call per batch (batch->prologue == NULL,
+     so all dirty flags fire -> emit everything), redirect the output ring
+     to fd_batch_get_prologue(). Subsequent calls in this batch only have
+     CHANGED state dirty and route to batch->draw as normal -- those are
+     real per-draw transitions that must replay per tile.
+  2. fd2_emit_tile_init() (GMEM path): emit batch->prologue after
+     fd2_emit_restore(), before prepare_tile_fini_ib and the tile loop.
+  3. fd2_emit_sysmem_prep() (sysmem path): emit batch->prologue likewise --
+     sysmem batches never go through fd2_emit_tile_init() so they need
+     the prologue emitted here too.
+
+Effect: the first draw's state setup (the bulk of fd2_emit_state's output:
+SET_CONSTANT pile + IM_LOAD shader uploads + emit_constants) executes
+ONCE per batch instead of nbins times. For a 16-bin batch, this cuts the
+per-frame CP-executed work proportionally for that hoisted prefix.
+
+Next-session: measure binner_test heavy fps vs legacy KGSL (5.45 fps target,
+currently 0.99 fps); if material gap remains, look at the residual per-tile
+state in batch->draw (per-draw SET_CONSTANT volume) and the shader
+execution side.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Upstream-Status: Pending
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_emit.c | 22 ++++++++++++++++++-
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 13 +++++++++++
+ 2 files changed, 34 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
+index 05a69b12a71..7792d5494d9 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
+@@ -221,7 +221,27 @@ fd2_emit_state(struct fd_context *ctx, const enum fd_dirty_3d_state dirty)
+    struct fd2_blend_stateobj *blend = fd2_blend_stateobj(ctx->blend);
+    struct fd2_zsa_stateobj *zsa = fd2_zsa_stateobj(ctx->zsa);
+    struct fd2_shader_stateobj *fs = ctx->prog.fs;
+-   struct fd_ringbuffer *ring = ctx->batch->draw;
++
++   /* HOIST per-batch-invariant state to batch->prologue on the FIRST
++    * fd2_emit_state() call per batch (when ALL flags are dirty -> emit
++    * everything). The prologue runs ONCE per batch from fd2_emit_tile_init
++    * / fd2_emit_sysmem_prep; batch->draw is replayed PER TILE by
++    * render_tiles, so without this hoist the FIRST-draw state (shaders
++    * IM_LOAD, blend, depth, viewport, textures...) re-executes nbins times
++    * per batch (16x on heavy scenes). Subsequent fd2_emit_state() calls in
++    * this batch only have CHANGED state dirty, and go to batch->draw as
++    * normal -- those represent real per-draw state transitions.
++    *
++    * Cmdstream comparison vs legacy KGSL (2026-05-28): freedreno emits
++    * ~1.5x state writes per frame on the same workload, dominated by this
++    * per-tile replay of the first-draw state. KGSL emits invariant state
++    * in a per-batch header. */
++   struct fd_ringbuffer *ring;
++   if (ctx->batch->prologue == NULL) {
++      ring = fd_batch_get_prologue(ctx->batch);
++   } else {
++      ring = ctx->batch->draw;
++   }
+ 
+    /* NOTE: we probably want to eventually refactor this so each state
+     * object handles emitting it's own state..  although the mapping of
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+index 7699326c081..65df6bf209a 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -479,6 +479,12 @@ fd2_emit_sysmem_prep(struct fd_batch *batch)
+ 
+    fd2_emit_restore(ctx, ring);
+ 
++   /* Per-batch prologue (same as the GMEM path): invariant state hoisted by
++    * fd2_emit_state() on the first draw. Must run here too because sysmem
++    * batches never go through fd2_emit_tile_init. */
++   if (batch->prologue)
++      fd2_emit_ib(ring, batch->prologue);
++
+    OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+    OUT_RING(ring, CP_REG(REG_A2XX_RB_SURFACE_INFO));
+    OUT_RING(ring, A2XX_RB_SURFACE_INFO_SURFACE_PITCH(pitch));
+@@ -620,6 +626,13 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
+ 
+    fd2_emit_restore(ctx, ring);
+ 
++   /* Per-batch prologue: invariant state hoisted by fd2_emit_state() on the
++    * first draw of the batch (shaders, blend/depth/raster, viewport,
++    * textures). Runs ONCE here in batch->gmem instead of being replayed
++    * inside batch->draw nbins times. See fd2_emit.c:fd2_emit_state(). */
++   if (batch->prologue)
++      fd2_emit_ib(ring, batch->prologue);
++
+    prepare_tile_fini_ib(batch);
+ 
+    OUT_PKT3(ring, CP_SET_CONSTANT, 4);
