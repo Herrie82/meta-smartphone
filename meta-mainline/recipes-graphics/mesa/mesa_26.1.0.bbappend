@@ -62,6 +62,13 @@ SRC_URI:append = " \
 # reference but do not apply.
 #    file://0026-freedreno-a2xx-cycprobe-to-GPU-timestamps-via-CACHE_.patch
 
+# 0019 RE-ENABLED 2026-05-28 for retest after DVFS fix: previous test was
+# under DVFS-undershoot conditions (GPU at 27MHz, blur=960ms/frame); L2-miss
+# penalty would have been masked by the slow clock. With the kernel KGSL-style
+# boost (99049d909a36) keeping clock at MAX during work, L2 misses may now be
+# the visible bottleneck on desktop:blur (still 1 fps).
+SRC_URI:append = " file://0019-freedreno-a2xx-invalidate-L2-texture-cache-at-every-.patch"
+
 
 # 0010 (aggressive flush) and 0019 (L2 TC invalidate) tested 2026-05-28: both
 # DROPPED. Neither fixed the desktop:blur FPS 1 issue. 0010 has measured
