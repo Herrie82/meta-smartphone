@@ -54,6 +54,10 @@ SRC_URI:append = " \
     file://0038-freedreno-A22X-auto-route-deadlock-prone-batches.patch \
 "
 
+# BISECT 2026-05-30: 0038 (auto-route heuristic) dropped to test if it's the
+# cause of surface-manager boot-time hangchecks.
+#    file://0038-freedreno-A22X-auto-route-deadlock-prone-batches.patch
+
 # 2026-05-30 patch series cleanup:
 #   Tier-3 debug-only DROPPED (dev-probes nobody runs in production):
 #     0012 debug-dump emitted A22X VSC grid

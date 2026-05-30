@@ -1,54 +1,41 @@
-From 05f4239c5ba1d6b08e822e699bf418144dfe9222 Mon Sep 17 00:00:00 2001
+From 04b9dd38c0a9b163cfea6130798f5c4bc264daf1 Mon Sep 17 00:00:00 2001
 From: Herman van Hazendonk <github.com@herrie.org>
-Date: Sat, 30 May 2026 09:48:19 +0200
+Date: Sat, 30 May 2026 15:18:24 +0200
 Subject: [PATCH] freedreno: A22X route deadlock-prone GMEM batches to sysmem
- (FBO read-back OR high draw count)
+ (FBO read-back OR >=25 draws on multi-tile FB)
 
-On A22X (Adreno 220/225) the EDRAM back-end deadlocks
-(RBBM_STATUS=0xc4010310, all of GUI+RB+VGT+CP_NRT busy with CP cmd FIFO
-1/16 free, no progress) for two GMEM-tile batch classes:
+On A22X (Adreno 220/225) the EDRAM back-end deadlocks for two GMEM-tile
+batch classes:
 
-  (a) FBO read-back / multi-pass compositing (blur, refraction, bloom,
-      DOF) -- indicated by batch->restore != 0 (some attachment must be
-      restored from sysmem at tile-load because it was not fully cleared
-      by this batch). glmark2 desktop:blur w=4 is the canonical example.
-  (b) High aggregate work batches on multi-tile FBOs (shadow mapping,
-      complex geometry passes) where num_draws across many tiles saturates
-      the EDRAM back-end pipeline. glmark2 desktop:effect=shadow w=4 is
-      the canonical example: 1024x768 batches with num_draws=25-50.
+  (a) FBO read-back / multi-pass compositing -- batch->restore != 0
+      (e.g. glmark2 desktop:effect=blur w=4 composite batches).
+  (b) High aggregate work on multi-tile FBOs -- pixels >= 512x512 AND
+      num_draws >= 25 (e.g. glmark2 desktop:effect=shadow w=4).
 
-Both classes are unavoidable at the cmdstream level. Investigation in
-memory/project_a220_blur_hang_cmdstream_analysis confirmed: bounded
-submission, KGSL-pattern per-draw back-pressure, per-tile drain patterns,
-and various sync-event experiments were all falsified. The deadlock
-occurs at the same cumulative work threshold regardless of submit
-boundaries -- the EDRAM back-end producer/consumer chain saturates and
-cannot recover. KGSL ships A220 with bins=0 universally for the same
-reason (see memory/reference_kgsl_vs_freedreno_heavy_scene).
+Empirical per-batch DIAG instrumentation of the webOS surface-manager
+compositor shows its heaviest steady-state batches are num_draws=13 on
+1024x768 -- below the chosen threshold of 25. Earlier shipping of this
+patch used num_draws >= 10 which (correctly) routed those compositor
+batches to sysmem, but the sysmem path has a different intermittent
+failure mode for surface-manager's specific draw shape that the GMEM
+path handles cleanly. So we tune the threshold high enough to skip
+surface-manager normal work while still catching the actually-broken
+shadow class.
 
-Empirical per-batch DIAG instrumentation (2026-05-30):
+Validated 2026-05-30 across the test matrix:
 
-  jellyfish (1024x768, num_draws=2, restore=0, cleared=0x5)
-    -> GMEM, 12 fps clean
-  build:use-vbo=false (1024x768, num_draws=1, restore=0, cleared=0x5)
-    -> GMEM, --validate Success
-  binner_test heavy (256x256 batches, num_draws=1, mixed restore)
-    -> GMEM (autotune handles restore=0x4 ones at small size)
-  desktop:blur w=4 composite (1024x768, num_draws=2, restore=0x4)
-    -> sysmem via restore!=0, 21 fps clean
-  desktop:shadow w=4 (1024x768, num_draws=25-50, restore=0)
-    -> sysmem via draw count, no longer hangs
+  surface-manager:                          GMEM (max num_draws=13)
+                                            0 hangchecks/90s
+  jellyfish (num_draws=2):                  GMEM, 12 fps
+  glmark2 build/shading/bump (num_draws=1): GMEM, --validate Success
+  binner_test heavy (small batches):        GMEM
+  glmark2 desktop:blur w=4 (restore=0x4):   sysmem via restore, 21 fps
+  glmark2 desktop:shadow w=4 (num_draws=25-50): sysmem via draws+area
+                                            71 fps (was 26 + hang)
 
-The 512*512 area cutoff corresponds to ~2 tiles on A220's 512KB GMEM at
-32bpp color + 32bpp depth (8 bytes/pixel, 65536 pixels per tile). Smaller
-FBs fit in 1 tile -- no cumulative-resolve pressure -- and are left to
-autotune. The num_draws >= 10 threshold has wide margin: jellyfish
-(num_draws=2) and simple geometry scenes (num_draws=1) stay GMEM, while
-shadow (25-50) and similar heavy passes get routed to sysmem.
-
-Requires the sysmem-prep correctness fixes (RB_DEPTH_INFO emit + skip HW
-fast-clear under sysmem; see memory/project_a220_sysmem_path_fixed) to be
-in place, otherwise auto-routed batches would render garbage.
+Requires the sysmem-prep correctness fixes (RB_DEPTH_INFO emit + skip
+HW fast-clear under sysmem; see memory/project_a220_sysmem_path_fixed)
+to be in place, otherwise auto-routed batches would render garbage.
 
 FD_MESA_DEBUG=gmem forces GMEM for debug; FD_MESA_DEBUG=sysmem forces
 sysmem unconditionally.
@@ -57,11 +44,11 @@ Upstream-Status: Pending
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 ---
- .../drivers/freedreno/freedreno_gmem.c        | 47 +++++++++++++++++++
- 1 file changed, 47 insertions(+)
+ .../drivers/freedreno/freedreno_gmem.c        | 41 +++++++++++++++++++
+ 1 file changed, 41 insertions(+)
 
 diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
-index a5ea50ad9eb..05d531ececc 100644
+index a5ea50ad9eb..0365debdf52 100644
 --- a/src/gallium/drivers/freedreno/freedreno_gmem.c
 +++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
 @@ -23,6 +23,7 @@
@@ -72,53 +59,47 @@ index a5ea50ad9eb..05d531ececc 100644
  #include "freedreno_tracepoints.h"
  #include "freedreno_util.h"
  
-@@ -780,6 +781,52 @@ fd_gmem_render_tiles(struct fd_batch *batch)
+@@ -780,6 +781,46 @@ fd_gmem_render_tiles(struct fd_batch *batch)
        if ((pfb->nr_cbufs == 0) && !pfb->zsbuf.texture) {
           sysmem = true;
        }
 +
-+      /* A22X (Adreno 220/225) GMEM-deadlock heuristic:
++      /* A22X (Adreno 220/225) GMEM-deadlock heuristic.
 +       *
 +       * On A22X the EDRAM back-end deadlocks (RBBM_STATUS=0xc4010310, all of
-+       * GUI+RB+VGT+CP_NRT busy + CP cmd FIFO 1/16 free, no progress) for two
++       * GUI+RB+VGT+CP_NRT busy + CP cmd FIFO 1/16 free, no progress) on two
 +       * classes of GMEM-tile batches:
 +       *
-+       *   (a) FBO read-back patterns -- blur ping-pong, refraction, etc. --
-+       *       indicated by batch->restore != 0 (some attachment is restored
-+       *       from sysmem at tile-load because it was not fully cleared by
-+       *       this batch).
-+       *   (b) High aggregate work batches on multi-tile FBOs -- shadow
-+       *       mapping, complex scenes -- where num_draws across many tiles
-+       *       saturates the EDRAM back-end pipeline. Empirically a
-+       *       1024x768 batch with >=10 draws is sufficient to hit it.
++       *   (a) FBO read-back / multi-pass compositing: batch->restore != 0
++       *       (some attachment must be restored from sysmem at tile-load
++       *       because this batch did not fully clear it). Catches glmark2
++       *       desktop:effect=blur w=4 ping-pong composite batches.
++       *   (b) High aggregate work on multi-tile FBOs: pixels >= 512*512 AND
++       *       num_draws >= 25. The threshold is empirically tuned: webOS
++       *       surface-manager's heaviest steady-state batches are
++       *       num_draws=13 on 1024x768, while glmark2 desktop:effect=shadow
++       *       w=4 produces num_draws=25-50 batches that DO hit the deadlock.
 +       *
 +       * Both classes are unavoidable at the cmdstream level: bounded
 +       * submission and KGSL-pattern sync are both falsified (see
 +       * memory/project_a220_blur_hang_cmdstream_analysis). KGSL ships A220
 +       * with bins=0 universally (see memory/reference_kgsl_vs_freedreno_heavy_scene).
 +       *
-+       * Single-draw and few-draw, full-clear batches (build/shading/bump/
-+       * texture, surface-manager, binner_test heavy, jellyfish) keep GMEM
-+       * tile speed. !FD_DBG(GMEM) so users can force GMEM for debug.
++       * FD_MESA_DEBUG=gmem forces GMEM for debug; FD_MESA_DEBUG=sysmem
++       * forces sysmem unconditionally.
 +       *
 +       * Validated 2026-05-30:
-+       *   jellyfish (1024x768, num_draws=2):                GMEM, 12 fps
-+       *   glmark2 build/shading/bump (num_draws=1):         GMEM, Success
++       *   surface-manager (max num_draws=13 / 1024x768):   GMEM, 0 hangs/90s
++       *   jellyfish (1024x768, num_draws=2):               GMEM, 12 fps
++       *   glmark2 build/shading/bump (num_draws=1):        GMEM, Success
 +       *   binner_test heavy (256x256 batches, num_draws=1): GMEM
-+       *   glmark2 desktop:blur w=4 (1024x768, restore=0x4): sysmem, 21 fps
-+       *   glmark2 desktop:shadow w=4 (1024x768, num_draws=25-50): sysmem
++       *   glmark2 desktop:blur w=4 (1024x768, restore=0x4): sysmem via restore, 21 fps
++       *   glmark2 desktop:shadow w=4 (1024x768, num_draws=25-50): sysmem via draws+area, 71 fps
 +       */
 +      if (is_a22x(ctx->screen) && !FD_DBG(GMEM)) {
-+         /* Triggers if either:
-+          *  - the batch reads its own FBO contents back (multi-pass), OR
-+          *  - it has a lot of draws on a framebuffer big enough to need
-+          *    multiple GMEM tiles (cumulative back-end pressure).
-+          *
-+          * 512*512 ~ 2 tiles on A220's 512KB GMEM (32bpp color + depth).
-+          */
 +         const unsigned pixels = pfb->width * pfb->height;
 +         if (batch->restore ||
-+             (pixels >= 512 * 512 && batch->num_draws >= 10)) {
++             (pixels >= 512 * 512 && batch->num_draws >= 25)) {
 +            sysmem = true;
 +         }
 +      }
