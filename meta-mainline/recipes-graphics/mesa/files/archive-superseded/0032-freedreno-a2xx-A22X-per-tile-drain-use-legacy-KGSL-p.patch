@@ -1,0 +1,105 @@
+From 433051f7ec0edb3bfc65a9ea0cf11c3f86c14db6 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Fri, 29 May 2026 19:49:12 +0200
+Subject: [PATCH] freedreno/a2xx: A22X per-tile drain use legacy KGSL pattern
+ (CACHE_FLUSH + WAIT_REG_EQ(RBBM_DEBUG bit24))
+
+Patch '0018 move A22X cache-flush drain from per-draw to per-tile' made
+prepare_tile_fini_ib() emit, per tile on A22X:
+
+    CACHE_FLUSH_TS scratch_bo seqno
+    WFI
+
+That is in theory strictly stronger than what legacy KGSL does, but the
+glmark2 desktop:blur w=4 hang shows it does NOT actually prevent the
+EDRAM-back-end pipeline deadlock (RBBM_STATUS=0xc4010310 with GUI+RB+VGT+CP_NRT
+all busy and CP cmd FIFO 1/16 free). Bounded submission falsified the
+'submit too large' hypothesis -- the GPU deadlocks at the same cumulative
+work threshold regardless of submit-boundary placement, which means the
+deadlock is INSIDE the per-tile back-end pipeline (EDRAM allocator /
+VGT-vs-RB tile resolve ordering), not at the submit boundary.
+
+The legacy KGSL trace shows the same A220 hardware renders this exact scene
+without ever wedging, emitting per-draw:
+
+    CACHE_FLUSH                    (plain, no _TS)
+    WAIT_REG_EQ(0x39b mask=1<<24 val=1<<24)
+
+i.e. wait for RBBM_DEBUG bit 24 to set. RBBM_DEBUG is a vendor opaque debug
+register with no documented bitfields in either the mesa or kernel a2xx.xml;
+bit 24 likely signals 'cache-flush+EDRAM-coherency settled'. freedreno never
+touches this register at all, which means the hardware state KGSL waits on
+is just never confirmed before the next per-tile resolve issues.
+
+This patch replaces the CACHE_FLUSH_TS+WFI body of the per-tile drain in
+prepare_tile_fini_ib() (a22x only -- a20x path untouched) with the exact
+KGSL pattern. The scratch_buf / cache_flush_seqno infrastructure 0016
+introduced is kept in place (just unused) to keep the patch minimal; a
+follow-up can remove them if the KGSL pattern proves out.
+
+Risk: bit 24 of RBBM_DEBUG is undocumented; if the bit is never set on
+this SoC the WAIT_REG_EQ will spin forever and we'll hangcheck instead of
+pipeline-deadlock -- easy to revert and falsify. If the bit is set
+unconditionally (reads-as-1) the WAIT is a no-op and we should expose the
+original race ahead of GMEM writes the strong drain was guarding against
+(stale-data / wedge on heavy multi-bin scenes), a distinguishable symptom.
+
+Upstream-Status: Pending
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 37 ++++++++++---------
+ 1 file changed, 20 insertions(+), 17 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+index 5a7b319135a..20f38ce54a7 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -189,24 +189,27 @@ prepare_tile_fini_ib(struct fd_batch *batch) assert_dt
+    OUT_RING(ring, fui((float)gmem->bin_h / 2.0f)); /* YSCALE */
+    OUT_RING(ring, fui((float)gmem->bin_h / 2.0f)); /* YOFFSET */
+ 
+-   /* A22X: STRONG drain before the EDRAM_COPY resolve. The tile's draws must
+-    * have fully landed in GMEM before the resolve reads it back; a plain
+-    * OUT_WFI is insufficient on A220 (it does not wait for VGT DMA). Use
+-    * CACHE_FLUSH_TS + WFI, ONCE per tile here -- this is the per-tile
+-    * boundary that the resolve race actually needs, and it REPLACES the
+-    * per-draw drain (which serialised every draw and crippled heavy
+-    * multi-bin scenes to ~1 fps). The mode transition COLOR_DEPTH<->EDRAM_COPY
+-    * also needs this sync. (This IB is built once and replayed per tile, so
+-    * the flush runs once per tile, draining that tile's draws.) */
++   /* A22X: per-tile drain before the EDRAM_COPY resolve, using the LEGACY
++    * KGSL pattern -- plain CACHE_FLUSH event followed by WAIT_REG_EQ on
++    * RBBM_DEBUG (0x39b) bit 24. RBBM_DEBUG is a vendor opaque DEBUG
++    * register; KGSL captures consistently show bit 24 used as the
++    * cache-flush+EDRAM-coherency completion bit. The CACHE_FLUSH_TS + WFI
++    * pattern this replaces is in theory stronger but in practice does NOT
++    * prevent the heavy-blur EDRAM-back-end pipeline deadlock
++    * (RBBM_STATUS=0xc4010310 with GUI+RB+VGT+CP_NRT all busy); the KGSL
++    * pattern works on the same hardware for the same scene. See
++    * memory/reference_kgsl_vs_freedreno_heavy_scene and
++    * memory/project_a220_blur_hang_cmdstream_analysis for the analysis
++    * that points at bit 24 of RBBM_DEBUG specifically. */
+    if (!is_a20x(ctx->screen)) {
+-      if (fd2_ctx->scratch_buf) {
+-         struct fd_bo *scratch_bo = fd_resource(fd2_ctx->scratch_buf)->bo;
+-         OUT_PKT3(ring, CP_EVENT_WRITE, 3);
+-         OUT_RING(ring, CACHE_FLUSH_TS);
+-         OUT_RELOC(ring, scratch_bo, 0, 0, 0); /* timestamp address */
+-         OUT_RING(ring, ++fd2_ctx->cache_flush_seqno);
+-      }
+-      OUT_WFI(ring);
++      OUT_PKT3(ring, CP_EVENT_WRITE, 1);
++      OUT_RING(ring, CACHE_FLUSH);
++
++      OUT_PKT3(ring, CP_WAIT_REG_EQ, 4);
++      OUT_RING(ring, REG_A2XX_RBBM_DEBUG);  /* 0x39b */
++      OUT_RING(ring, 1u << 24);             /* expected: bit 24 set */
++      OUT_RING(ring, 1u << 24);             /* mask: only check bit 24 */
++      OUT_RING(ring, 1);                    /* 1 poll/iter */
+    }
+ 
+    OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+-- 
+2.43.0
+

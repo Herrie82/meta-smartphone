@@ -1,0 +1,100 @@
+From 4b71281c3700bf848bd1fabbf70869aee7912843 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Sat, 30 May 2026 07:13:55 +0200
+Subject: [PATCH 1/2] freedreno/a2xx: A22X per-draw cache flush use legacy KGSL
+ pattern (CACHE_FLUSH + WAIT_REG_EQ(RBBM_DEBUG bit24))
+
+A22X has a back-end pipeline-deadlock class on heavy multi-FBO scenes (e.g.
+glmark2 desktop:blur w=4): without per-draw back-pressure on the EDRAM
+back-end, draws stack up faster than RB can drain. Symptom is
+RBBM_STATUS=0xc4010310 (GUI + RB + VGT + CP_NRT all busy + CP cmd FIFO
+1/16 free), no progress, hangcheck recovers every ~4s. Cmdstream-level
+analysis is in memory/project_a220_blur_hang_cmdstream_analysis.
+
+The legacy KGSL driver (shipped to ~50M HP TouchPad consumer units)
+captures consistently show per-draw:
+
+  CACHE_FLUSH                    (plain event, no _TS)
+  WAIT_REG_EQ(0x39b mask=1<<24 val=1<<24)
+
+Bit 24 of REG_A2XX_RBBM_DEBUG is a vendor opaque cache-flush+EDRAM-
+coherency completion bit (undocumented in any released a2xx XML; bit
+position consistent across all observed KGSL captures). Waiting on it
+per draw creates per-draw back-pressure on the back-end without doing a
+full pipeline drain like CACHE_FLUSH_TS+WFI would.
+
+For A22X, replace the upstream-default per-draw 12x async CACHE_FLUSH
+with the KGSL pattern. The A20X path keeps the original 12x async
+CACHE_FLUSH (no per-tile drain there, the legacy behaviour is the proven
+correctness for that GPU).
+
+Note: this DOES NOT fix the desktop:blur w=4 hang on its own (validated
+2026-05-29 -- the hang turned out to be a GMEM-mode-only hardware limit
+that requires switching to sysmem rendering to resolve, see
+memory/project_a220_sysmem_path_fixed). It is kept because it gets the
+A22X cmdstream closer to what the production KGSL driver emits, and
+costs only ~0.6% on binner_test heavy.
+
+Consolidates 0016 + 0020 + 0033 from the previous patch series (drops
+the unused scratch_buf+seqno infrastructure 0016 introduced).
+
+Upstream-Status: Pending
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_draw.c | 30 +++++++++++++++++--
+ 1 file changed, 27 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
+index 5a101669de0..f249595b5aa 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
+@@ -30,10 +30,34 @@ pack_rgba(enum pipe_format format, const float *rgba)
+ }
+ 
+ static void
+-emit_cacheflush(struct fd_ringbuffer *ring)
++emit_cacheflush(struct fd_context *ctx, struct fd_ringbuffer *ring)
+ {
+-   unsigned i;
++   /* A22X: emit per-draw the legacy KGSL pattern -- plain CACHE_FLUSH event
++    * followed by WAIT_REG_EQ(RBBM_DEBUG, bit24). This is a lightweight
++    * coherency wait, NOT a full pipeline drain. KGSL captures consistently
++    * show this pattern at ~1.8 WFI/draw; without per-draw back-pressure on
++    * the EDRAM back-end, freedreno's pre-this-patch path lets heavy multi-FBO
++    * scenes (glmark2 desktop:blur w=4) stack up draws faster than RB can
++    * drain -> RBBM_STATUS=0xc4010310 pipeline deadlock (GMEM mode only;
++    * see memory/project_a220_blur_hang_cmdstream_analysis). Bit 24 of
++    * RBBM_DEBUG (0x39b) is a vendor opaque cache-flush+EDRAM-coherency
++    * completion bit; not documented but consistently used by KGSL.
++    *
++    * A20X keeps the original 12x async CACHE_FLUSH (no per-tile drain needed
++    * there, the legacy 12x is the proven correctness for that GPU). */
++   if (is_a22x(ctx->screen)) {
++      OUT_PKT3(ring, CP_EVENT_WRITE, 1);
++      OUT_RING(ring, CACHE_FLUSH);
+ 
++      OUT_PKT3(ring, CP_WAIT_REG_EQ, 4);
++      OUT_RING(ring, REG_A2XX_RBBM_DEBUG);  /* 0x39b */
++      OUT_RING(ring, 1u << 24);             /* expected: bit 24 set */
++      OUT_RING(ring, 1u << 24);             /* mask: only check bit 24 */
++      OUT_RING(ring, 1);                    /* 1 poll/iter */
++      return;
++   }
++
++   unsigned i;
+    for (i = 0; i < 12; i++) {
+       OUT_PKT3(ring, CP_EVENT_WRITE, 1);
+       OUT_RING(ring, CACHE_FLUSH);
+@@ -138,7 +162,7 @@ draw_impl(struct fd_context *ctx, const struct pipe_draw_info *info,
+       OUT_RING(ring, 0x00000000);
+    }
+ 
+-   emit_cacheflush(ring);
++   emit_cacheflush(ctx, ring);
+ }
+ 
+ static bool
+-- 
+2.43.0
+

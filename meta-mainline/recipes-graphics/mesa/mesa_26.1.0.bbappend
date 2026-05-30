@@ -44,19 +44,46 @@ SRC_URI:append = " \
     file://0006-freedreno-a2xx-set-CLIP_DISABLE-during-GMEM-operatio.patch \
     file://0007-freedreno-a2xx-add-GMEM-synchronization-for-A22X.patch \
     file://0011-freedreno-a2xx-keep-perfmon-enabled-so-kernel-devfre.patch \
-    file://0012-freedreno-a2xx-debug-dump-emitted-A22X-VSC-grid.patch \
     file://0013-freedreno-a2xx-cap-VSC-pipe-width-at-2-bins-on-A22X.patch \
     file://0014-freedreno-a2xx-keep-A22X-bin-grid-coverable-by-H-1-V.patch \
-    file://0016-freedreno-a2xx-use-CACHE_FLUSH_TS-WFI-per-draw-on-A2.patch \
-    file://0018-freedreno-a2xx-move-A22X-cache-flush-drain-from-per-.patch \
-    file://0020-freedreno-a2xx-skip-per-draw-cache-flush-on-A22X-KGS.patch \
-    file://0022-freedreno-a2xx-add-fd2_emit_cycprobe-CYCLECTR-perfco.patch \
-    file://0023-freedreno-a2xx-place-CYCLECTR-probes-around-per-tile.patch \
-    file://0024-freedreno-a2xx-fix-CYCLECTR-probe-slot-0-collision-a.patch \
-    file://0025-freedreno-a2xx-CYCLECTR-use-global-tile-index-not-ti.patch \
     file://0029-freedreno-drm-msm-don-t-fence-wait-in-FD_RD_DUMP-ful.patch \
-    file://0031-freedreno-bounded-tiles-per-submit-env-gated-FD_BOUN.patch \
+    file://0034-freedreno-a2xx-emit-RB_DEPTH_INFO-in-sysmem-prep.patch \
+    file://0035-freedreno-a2xx-skip-HW-fast-clear-under-FD_DBG-SYSME.patch \
+    file://0036-freedreno-a2xx-A22X-cache-flush-use-KGSL-pattern-per.patch \
+    file://0037-freedreno-a2xx-A22X-per-tile-drain-use-KGSL-pattern.patch \
+    file://0038-freedreno-A22X-auto-route-deadlock-prone-batches.patch \
 "
+
+# 2026-05-30 patch series cleanup:
+#   Tier-3 debug-only DROPPED (dev-probes nobody runs in production):
+#     0012 debug-dump emitted A22X VSC grid
+#     0022 add fd2_emit_cycprobe() CYCLECTR perfcounter helper
+#     0023 place CYCLECTR probes around per-tile work
+#     0024 fix CYCLECTR probe slot-0 collision + add WFI
+#     0025 CYCLECTR use global tile index, not tile->n
+#   Cache-flush series CONSOLIDATED 0016+0018+0020+0032+0033 -> 0036+0037:
+#     0016 use CACHE_FLUSH_TS + WFI per draw on A22X (init, replaced by 0033)
+#     0018 move A22X cache-flush drain from per-draw to per-tile (init, modified by 0032)
+#     0020 skip per-draw cache flush on A22X (KGSL diff)
+#     0032 A22X per-tile drain use legacy KGSL pattern
+#     0033 A22X per-draw KGSL-pattern back-pressure
+#     The chain net effect was: a22x per-draw + per-tile use KGSL pattern
+#     (CACHE_FLUSH + WAIT_REG_EQ(0x39b bit24)). The scratch_buf/seqno code
+#     0016 added became unused after 0033. Consolidated into two clean patches
+#     against pristine upstream.
+
+# 0031 DROPPED 2026-05-29 after validation: bounded submission FALSIFIED as the
+# fix for desktop:blur w=4 hang. Sweep of FD_BOUNDED_TILES={1,2,4,8,16} shows:
+#   bound>=4: identical hang storm as baseline (4 hangchecks in 30s, FPS:1)
+#   bound<=2: fewer hangchecks but throughput too low to render meaningfully
+# AND introduces rendering corruption on at least one scene (Linaro image
+# black-top -- per-batch-init state likely not re-emitted on sub-submit start:
+# scissor/viewport/depth/etc). Hypothesis "aggregate submit too large genuinely
+# wedges CP" is wrong; the GPU hangs at the SAME cumulative work regardless of
+# submit-boundary placement. The real deadlock is in freedreno's per-tile emit
+# sequence vs KGSL's, not the submit size. Patch preserved on disk.
+#    file://0031-freedreno-bounded-tiles-per-submit-env-gated-FD_BOUN.patch
+#
 
 # file://0030-freedreno-a2xx-emit-CP_SET_SHADER_BASES-per-program-.patch
 # file://0027-freedreno-a2xx-init-bool-and-loop-shader-constant-me.patch

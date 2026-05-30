@@ -49,10 +49,18 @@ diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/driver
 index 9f7124dfdee..6dadfe907ed 100644
 --- a/src/gallium/drivers/freedreno/freedreno_gmem.c
 +++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
-@@ -590,10 +590,40 @@ found:
+@@ -9,6 +9,7 @@
+ #include "pipe/p_state.h"
+ #include "util/format/u_format.h"
+ #include "util/hash_table.h"
++#include "util/set.h"
+ #include "util/macros.h"
+ #include "util/u_debug.h"
+ #include "util/u_dump.h"
+@@ -590,10 +591,40 @@ found:
   * GMEM render pass
   */
- 
+
 +/*
 + * A22X bounded-submission helper: returns the configured tiles-per-submit
 + * cap, or 0 if disabled (default). Env-gated via FD_BOUNDED_TILES so the
@@ -90,7 +98,7 @@ index 9f7124dfdee..6dadfe907ed 100644
     int i;
  
     simple_mtx_lock(&ctx->gmem_lock);
-@@ -603,7 +633,7 @@ render_tiles(struct fd_batch *batch, struct fd_gmem_stateobj *gmem) assert_dt
+@@ -603,7 +634,7 @@ render_tiles(struct fd_batch *batch, struct fd_gmem_stateobj *gmem) assert_dt
     if (batch->restore)
        ctx->stats.batch_restore++;
  
@@ -99,7 +107,7 @@ index 9f7124dfdee..6dadfe907ed 100644
        struct fd_tile *tile = &gmem->tile[i];
  
        trace_start_tile(&batch->trace, batch->gmem, tile->bin_h, tile->yoff, tile->bin_w,
-@@ -632,6 +662,82 @@ render_tiles(struct fd_batch *batch, struct fd_gmem_stateobj *gmem) assert_dt
+@@ -632,6 +663,82 @@ render_tiles(struct fd_batch *batch, struct fd_gmem_stateobj *gmem) assert_dt
  
        /* emit gmem2mem to transfer tile back to system memory: */
        ctx->emit_tile_gmem2mem(batch, tile);
