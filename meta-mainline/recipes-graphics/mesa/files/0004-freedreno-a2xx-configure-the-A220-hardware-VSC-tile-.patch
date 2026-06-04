@@ -224,7 +224,7 @@ index dfdb9c9ab01..7d9a4db6d53 100644
 +    * state. Independent of the a20x use_hw_binning() path above — we keep
 +    * plain DRAW_INDX (IGNORE_VISIBILITY) and add no binning pass; this just
 +    * stops the binner corrupting tile coverage. See emit_vsc_config(). */
-+   if (is_a22x(ctx->screen) && !debug_get_bool_option("FD_A22X_NOVSC", false))
++   if (is_a22x(ctx->screen))
 +      emit_vsc_config(batch);
 +
     util_dynarray_clear(&batch->draw_patches);

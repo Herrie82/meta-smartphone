@@ -3,8 +3,6 @@ From: Herman van Hazendonk <github.com@herrie.org>
 Date: Sat, 21 Feb 2026 18:01:35 +0100
 Subject: [PATCH 1/7] freedreno: add is_a22x() helper for Adreno 220/225
 
-Upstream-Status: Pending
-
 freedreno/a2xx: increase scheduler instruction limit
 
 Upstream-Status: Pending

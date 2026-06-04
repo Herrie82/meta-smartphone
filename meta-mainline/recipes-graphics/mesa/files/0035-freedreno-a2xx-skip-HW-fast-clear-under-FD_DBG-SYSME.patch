@@ -1,0 +1,71 @@
+From 2f19695353c292227bb7d384dc3ce366c8ecb019 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Sat, 30 May 2026 06:21:36 +0200
+Subject: [PATCH] freedreno/a2xx: skip HW fast-clear under FD_DBG(SYSMEM) so
+ sysmem state survives
+
+fd2_clear_fast emits a small GMEM-style fast-clear stub (RB_SURFACE_INFO
+PITCH=32 MSAA=2 + RB_COLOR_INFO COLORX_4_4_4_4 + RB_DEPTH_INFO DEPTHX_16
+BASE=0) and a fullscreen RECTLIST draw. That stub clobbers the actual
+sysmem framebuffer's RB_SURFACE_INFO/RB_COLOR_INFO/RB_DEPTH_INFO set up by
+fd2_emit_sysmem_prep, leaving subsequent user draws targeting garbage at
+iova 0 for depth/color.
+
+Upstream's design was that fast-clear forces GMEM rendering (see the
+'sysmem rendering is disabled when clear is used' note in the function
+header). The previous A22X-enable change ('Enable the HW fast-clear for
+A22X too', comment retained) extended fast-clear to A22X for the GMEM
+case where the slow-clear-quad path doesn't actually clear GMEM tiles.
+FD_DBG(SYSMEM) was overlooked at that point and the combination is
+broken: forced sysmem + fast-clear-clobbers-surface-info -> render
+garbage -> --validate fails on every depth-tested scene in sysmem mode.
+
+Fix: bail out of fast-clear when FD_DBG(SYSMEM) is set. The slow-clear
+(fullscreen quad draw via fd_clear) then runs and works correctly under
+sysmem rendering -- it draws via the normal state path which has the
+correct surface info from fd2_emit_sysmem_prep+0034.
+
+Validated against the captured build:use-vbo=false sysmem RD dump
+(memory/project_a220_blur_hang_cmdstream_analysis for the capture
+method): with this change the fast-clear sub-IB is no longer called, and
+the only RB_DEPTH_INFO/RB_COLOR_INFO values present in the cmdstream are
+the correct sysmem ones (DEPTHX_24_8 + BASE=zsbuf_iova, COLORX_8_8_8_8 +
+BASE=cbuf_iova).
+
+Upstream-Status: Pending
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_draw.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
+index fb656099716..d787755a99a 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
+@@ -494,6 +494,22 @@ fd2_clear_fast(struct fd_context *ctx, unsigned buffers,
+    if (!is_a2xx(ctx->screen))
+       return false;
+ 
++   /*
++    * The HW fast-clear emits a GMEM-style RB_SURFACE_INFO/RB_COLOR_INFO/
++    * RB_DEPTH_INFO triple (PITCH=32, COLORX_4_4_4_4, DEPTHX_16, BASE=0) to
++    * configure the fast-clear shader's tiny EDRAM target. That clobbers the
++    * sysmem framebuffer state set up by fd2_emit_sysmem_prep, leaving the
++    * actual user draws targeting garbage at iova 0 for depth/color -- visible
++    * as random missing geometry and --validate failures on every depth-tested
++    * scene in sysmem mode. Upstream's design (per the comment above) was that
++    * clear forces GMEM rendering; the FD_DBG(SYSMEM) path bypasses that, so
++    * we have to bail out here and let the slow-clear (fullscreen quad draw)
++    * run instead -- which uses the correct sysmem state from fd2_emit_state
++    * and clears via a normal draw without touching surface-info regs.
++    */
++   if (FD_DBG(SYSMEM))
++      return false;
++
+    if (buffers & PIPE_CLEAR_COLOR)
+       color_size = util_format_get_blocksizebits(format) == 32;
+ 
+-- 
+2.43.0
+

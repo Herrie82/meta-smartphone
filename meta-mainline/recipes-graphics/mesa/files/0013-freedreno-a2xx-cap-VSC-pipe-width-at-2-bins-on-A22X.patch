@@ -1,0 +1,59 @@
+From c0780a35241d67ba93982dfad37984b2a7aaf209 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Wed, 27 May 2026 10:35:22 +0200
+Subject: [PATCH] freedreno/a2xx: cap VSC pipe width at 2 bins on A22X
+
+A legacy-webOS KGSL capture of the same draws (diag_binning) shows the
+proprietary driver drives the a220 hardware binner with plain DRAW_INDX
+(no binning pass) and VSC pipes that span at most 2 bins in X (W<=2),
+e.g. PIPE_CONFIG 0x01200000/0x01100400/...  freedreno's generic pipe
+assignment instead grows tiles-per-pipe in X until the grid fits the 8
+pipes, which for >8-bin grids makes a pipe span a whole row (W = nbins_x
+= 3 or 4).  The a220 binner mis-routes primitives for such wide pipes,
+so its auto-generated visibility stream is garbage -> tile corruption
+and a 3D back-end wedge on heavy scenes (glmark desktop blur).
+
+Cap tiles-per-pipe-X at 2 for A22X (only growing tiles-per-pipe-Y if a
+tall grid otherwise exceeds the 8 pipes).  With W<=2 the existing
+A2XX_VSC_PIPE_CONFIG encoding emits exactly the captured KGSL words
+(a pipe at (0,0) with w=2 -> 0x01200000).
+
+Upstream-Status: Pending
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ src/gallium/drivers/freedreno/freedreno_gmem.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
+index bba981a4ca8..df894016cf0 100644
+--- a/src/gallium/drivers/freedreno/freedreno_gmem.c
++++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
+@@ -306,6 +306,24 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
+        */
+       tpp_x = 6;
+       tpp_y = 6;
++   } else if (is_a22x(screen)) {
++      /* a220 hardware binner: the captured webOS/KGSL driver only ever
++       * programs VSC pipes that span at most 2 bins in X (W<=2), keeping
++       * H=1 wherever the grid fits the 8 pipes.  The generic path below
++       * instead lets a single pipe span the whole row (W = nbins_x, e.g.
++       * 3 or 4 bins).  The a220 binner mis-routes primitives for such
++       * wide pipes -> garbage auto-visibility -> tile corruption and a
++       * back-end wedge on heavy scenes (e.g. glmark desktop blur).
++       *
++       * Cap pipe width at 2 bins; only grow pipe height if a tall grid
++       * cannot otherwise be covered by the 8 hardware pipes.  With w<=2
++       * the existing A2XX_VSC_PIPE_CONFIG encoding emits exactly KGSL's
++       * words (e.g. a pipe at (0,0) with w=2 -> 0x01200000). */
++      tpp_x = 2;
++      tpp_y = 1;
++      while ((DIV_ROUND_UP(gmem->nbins_y, tpp_y) *
++              DIV_ROUND_UP(gmem->nbins_x, tpp_x)) > npipes)
++         tpp_y += 1;
+    } else {
+       tpp_x = tpp_y = 1;
+       while (DIV_ROUND_UP(gmem->nbins_y, tpp_y) > npipes)
+-- 
+2.43.0
+
