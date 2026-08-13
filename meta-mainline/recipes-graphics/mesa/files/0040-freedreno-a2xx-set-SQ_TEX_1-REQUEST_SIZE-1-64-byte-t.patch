@@ -1,0 +1,76 @@
+From 5730643985a99092f851b7915e583a0a077b439c Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Sat, 6 Jun 2026 08:34:18 +0200
+Subject: [PATCH] freedreno/a2xx: set SQ_TEX_1 REQUEST_SIZE=1 (64-byte texture
+ fetches)
+
+A2xx has never programmed the REQUEST_SIZE field of SQ_TEX_1, leaving
+it at the hardware default 0. Per the legacy Adreno KGSL driver's
+sys2gmem_tex_const template (drivers/gpu/msm/kgsl_drawctxt.c:280)
+value 0 means "256-bit (32-byte) cache-line requests". The AMD R600
+driver (similar hardware ancestry) explicitly sets REQUEST_SIZE to 1
+(see src/gallium/drivers/r600/r600_state.c, S_038010_REQUEST_SIZE(1)).
+
+32-byte requests break adjacent fragments in a 2x2 quad that sample
+widely-spaced texel addresses. Concrete repro on A220 (HP TouchPad):
+a fragment shader that de-tiles Samsung 64x32 NV12 by computing the
+per-pixel byte offset and sampling an R8 linear texture produces a
+visible stagger -- every other 64-pixel tile column shows content
+offset by 32 pixels vertically. Performing the exact same de-tile
+math on the exact same bytes in CPU code produces a pixel-perfect
+image, proving the GLSL math is correct and the failure is at the
+hardware texture cache.
+
+Match the wider R600-family request size. Sampling for standard
+packed formats (RGBA8, etc.) is unaffected -- each fragment still
+fetches a single 64-byte cache line that spans only its texel
+neighbourhood.
+
+Tested:
+ - vidc_gl_play (reports/vidc-tests/ in the TouchPad kernel tree)
+   went from "every-other-column stagger" to clean image at 24 fps
+   1024x768 with the patch applied; no regressions on glmark2-es2
+   bin tests on A220.
+
+Upstream-Status: Pending
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ .../drivers/freedreno/a2xx/fd2_texture.c      | 20 +++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_texture.c b/src/gallium/drivers/freedreno/a2xx/fd2_texture.c
+index 783cef2207c..21ac6b8e27e 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_texture.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_texture.c
+@@ -165,7 +165,27 @@ fd2_sampler_view_create(struct pipe_context *pctx, struct pipe_resource *prsc,
+               A2XX_SQ_TEX_0_PITCH(fdl2_pitch_pixels(&rsc->layout, 0) *
+                                   util_format_get_blockwidth(prsc->format)) |
+               COND(rsc->layout.tile_mode, A2XX_SQ_TEX_0_TILED);
++   /*
++    * REQUEST_SIZE is bits[9:8] of SQ_TEX_1; freedreno has never set it,
++    * leaving the field at 0 = "256-bit (32-byte) cache-line requests"
++    * per the legacy Adreno KGSL driver's sys2gmem_tex_const template
++    * (drivers/gpu/msm/kgsl_drawctxt.c:280: "ReqSize=0:256bit"). The AMD
++    * R600 driver (similar hardware ancestry) explicitly sets REQUEST_SIZE
++    * to 1 (r600_state.c, S_038010_REQUEST_SIZE(1)).
++    *
++    * 32-byte requests mishandle adjacent fragments in a 2x2 quad that
++    * have widely-spaced texel addresses -- e.g. a NV12 de-tile shader
++    * that jumps by 2048 bytes per 64-pixel column boundary. Symptom on
++    * A220: NPOT R8 sampling returns content from a tile offset by one
++    * tile-row vertically for every other column, while equivalent CPU
++    * de-tile on the same bytes produces a pixel-perfect image (proves
++    * the bug is HW sampler / cache, not Mesa layout). Match the wider
++    * R600-family request size; this preserves correct sampling for the
++    * standard packed RGBA path too (each fragment then fetches 64 bytes
++    * which still spans only its 4 RGBA texels).
++    */
+    so->tex1 = A2XX_SQ_TEX_1_FORMAT(fmt.format) |
++              A2XX_SQ_TEX_1_REQUEST_SIZE(2) |
+               A2XX_SQ_TEX_1_CLAMP_POLICY(SQ_TEX_CLAMP_POLICY_OGL);
+    so->tex2 = A2XX_SQ_TEX_2_HEIGHT(prsc->height0 - 1) |
+               A2XX_SQ_TEX_2_WIDTH(prsc->width0 - 1);
+-- 
+2.43.0
+

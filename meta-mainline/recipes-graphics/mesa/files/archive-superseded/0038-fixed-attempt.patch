@@ -1,0 +1,155 @@
+From 1416f157f0c7ca3953162b6d0aa15267c9c021ec Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Wed, 3 Jun 2026 18:55:38 +0200
+Subject: [PATCH] freedreno: A22X auto-route deadlock-prone GMEM batches to
+ sysmem (high draw count on multi-tile FB)
+
+On A22X (Adreno 220/225) the EDRAM back-end deadlocks
+(RBBM_STATUS=0xc4010310, all of GUI+RB+VGT+CP_NRT busy + CP cmd FIFO
+1/16 free, no progress) on high-aggregate-work batches that span
+multiple GMEM tiles -- e.g. shadow-mapping passes that issue many
+draws into a 1024x768 framebuffer that needs 2+ tiles on the A220's
+512 KB GMEM.
+
+Auto-route those batches to sysmem so the deadlock-prone GMEM tile
+machinery is skipped.
+
+Heuristic
+---------
+
+  pixels >= 512 * 512 && num_draws >= 25
+
+The pixels threshold picks framebuffers that need at least two GMEM
+tiles (32 bpp color + depth fits ~2 tiles at 512x512 on A220's GMEM).
+The num_draws threshold of 25 was empirically tuned: webOS surface-
+manager's heaviest steady-state batches are num_draws=13 on 1024x768
+and complete cleanly in GMEM, while glmark2 desktop:effect=shadow
+w=4 produces num_draws=25-50 batches that DO hit the deadlock and
+benefit from sysmem (was 26 fps + hang in GMEM; 71 fps under sysmem).
+
+Why not also auto-route batch->restore != 0
+-------------------------------------------
+
+An earlier revision of this heuristic auto-routed any batch with
+batch->restore != 0 (FBO read-back, multi-pass compositing) to
+sysmem, intending to catch glmark2 desktop:effect=blur w=4's ping-
+pong composite (restore=0x4 = PIPE_CLEAR_COLOR0). That clause also
+caught webOS surface-manager / luna-next-cardshell's status bar,
+card-thumbnail and lock-screen compositing batches -- which use the
+same restore=0x4 bit because both are color-attachment-0 read-backs
+indistinguishable at the freedreno layer.
+
+Routing the cardshell batches through sysmem produced an intermittent
+failure mode for surface-manager's specific draw shape that the GMEM
+path handles cleanly -- the user-visible regression was tap and
+swipe gestures not propagating to the UI because the compositor was
+repeatedly producing intermittently-bad frames. Validated 2026-06-03
+on a kernel-side bisect spanning 12 days of changes (drm/msm core +
+a2xx rebuild, mmcc-msm8660 sashiko fixes, gdsc Set A iterations
+v2..v6, GPU DVFS / kgsl_style_boost, autosuspend force-reset path):
+NONE of the kernel suspects were the regression. Reverting just this
+Mesa patch restored cardshell gesture responsiveness across the
+whole UI.
+
+The restore mask cannot tell blur from surface-manager apart, so the
+restore-based clause is omitted. glmark2 desktop:effect=blur w=4 may
+deadlock in GMEM again under this heuristic; run with
+FD_MESA_DEBUG=sysmem to force it through the sysmem path for those
+edge cases. Daily-driver compositing on the same hardware now works
+correctly.
+
+FD_MESA_DEBUG=gmem forces GMEM for debug; FD_MESA_DEBUG=sysmem
+forces sysmem unconditionally.
+
+Validation table
+----------------
+
+  surface-manager / luna-next-cardshell:           GMEM, gestures OK
+  jellyfish (1024x768, num_draws=2):                GMEM, 12 fps
+  glmark2 build/shading/bump (num_draws=1):         GMEM, Success
+  binner_test heavy (256x256 batches, num_draws=1): GMEM
+  glmark2 desktop:shadow w=4 (1024x768, num_draws=25-50): sysmem, 71 fps
+  glmark2 desktop:blur w=4 (1024x768, restore=0x4): GMEM (may
+    deadlock; use FD_MESA_DEBUG=sysmem to force)
+
+Requires the sysmem-prep correctness fixes (RB_DEPTH_INFO emit + skip
+HW fast-clear under sysmem) to be in place, otherwise auto-routed
+batches would render garbage.
+
+Upstream-Status: Pending
+
+Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
+---
+ .../drivers/freedreno/freedreno_gmem.c        | 49 +++++++++++++++++++
+ 1 file changed, 49 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
+index a5ea50ad9eb..449cfb15057 100644
+--- a/src/gallium/drivers/freedreno/freedreno_gmem.c
++++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
+@@ -23,6 +23,7 @@
+ #include "freedreno_gmem.h"
+ #include "freedreno_query_hw.h"
+ #include "freedreno_resource.h"
++#include "freedreno_screen.h"
+ #include "freedreno_tracepoints.h"
+ #include "freedreno_util.h"
+ 
+@@ -780,6 +781,54 @@ fd_gmem_render_tiles(struct fd_batch *batch)
+       if ((pfb->nr_cbufs == 0) && !pfb->zsbuf.texture) {
+          sysmem = true;
+       }
++
++      /* A22X (Adreno 220/225) GMEM-deadlock heuristic:
++       *
++       * On A22X the EDRAM back-end deadlocks (RBBM_STATUS=0xc4010310, all of
++       * GUI+RB+VGT+CP_NRT busy + CP cmd FIFO 1/16 free, no progress) on
++       * high-aggregate-work batches on multi-tile FBOs (shadow mapping,
++       * complex scenes) where num_draws across many tiles saturates the
++       * EDRAM back-end pipeline. Empirically a 1024x768 batch with >=25
++       * draws is sufficient to hit it on A220.
++       *
++       * Earlier revisions of this heuristic also auto-routed batches with
++       * batch->restore != 0 (FBO read-back, multi-pass compositing) to
++       * sysmem, intending to catch glmark2 desktop:effect=blur w=4's
++       * ping-pong composite. That clause also caught webOS surface-manager
++       * / luna-next-cardshell's status bar and card-thumbnail compositing
++       * batches (restore=0x4 = PIPE_CLEAR_COLOR0, same as blur's
++       * indistinguishable bit), and the sysmem path has an intermittent
++       * failure mode for surface-manager's specific draw shape that the
++       * GMEM path handles cleanly -- the user-visible regression was
++       * tap/swipe gestures not propagating to the UI because the
++       * compositor was repeatedly producing intermittently-bad frames.
++       * The restore mask cannot distinguish blur from surface-manager, so
++       * the auto-route based on restore is dropped. glmark2 blur w=4 may
++       * deadlock in GMEM again under this heuristic; run with
++       * FD_MESA_DEBUG=sysmem to force it through the sysmem path for
++       * those edge cases.
++       *
++       * Single-draw and few-draw, full-clear batches (build/shading/bump/
++       * texture, surface-manager, binner_test heavy, jellyfish) keep GMEM
++       * tile speed. !FD_DBG(GMEM) so users can force GMEM for debug.
++       *
++       * Validated 2026-06-03:
++       *   surface-manager / luna-next-cardshell:           GMEM, gestures OK
++       *   jellyfish (1024x768, num_draws=2):                GMEM, 12 fps
++       *   glmark2 build/shading/bump (num_draws=1):         GMEM, Success
++       *   binner_test heavy (256x256 batches, num_draws=1): GMEM
++       *   glmark2 desktop:shadow w=4 (1024x768, num_draws=25-50): sysmem
++       *   glmark2 desktop:blur w=4 (1024x768, restore=0x4): GMEM (may
++       *     deadlock; use FD_MESA_DEBUG=sysmem to force)
++       *
++       * 512*512 ~ 2 tiles on A220's 512KB GMEM (32bpp color + depth).
++       */
++      if (is_a22x(ctx->screen) && !FD_DBG(GMEM)) {
++         const unsigned pixels = pfb->width * pfb->height;
++         if (pixels >= 512 * 512 && batch->num_draws >= 25) {
++            sysmem = true;
++         }
++      }
+    }
+ 
+    if (FD_DBG(SYSMEM))
+-- 
+2.43.0
+

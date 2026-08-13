@@ -1,5 +1,11 @@
 # A22X (Adreno 220 / HP TouchPad) freedreno patch series — clean.
 #
+# This bbappend only carries the Tenderloin/A22X specific patches. The generic
+# mesa 26.1.0 recipe (mesa.inc + mesa_26.1.0.bb) lives in
+# meta-webos-ports/meta-luneos-backports-6.0/recipes-graphics/mesa/, and the
+# generic LuneOS PACKAGECONFIG (gallium, gbm, freedreno, ...) in
+# meta-webos-ports/meta-luneui/recipes-graphics/mesa/.
+#
 # Replaces the experimental "minimal + cycle-engineering" bbappend (now
 # mesa_%.bbappend.pre-a22x-vsc-fix). All falsified period-8 experiments
 # were dropped; the old patch files are kept under files/archive/ for
@@ -20,6 +26,8 @@
 #   0008  invalidate L2 texture cache at every batch start  <-- textures + stale-data
 #   0009  WAIT_FOR_IDLE at start of fd2_emit_restore
 #   0010  aggressive cache flush+invalidate at batch start  <-- continuous-render stability
+#   0040  set SQ_TEX_1 REQUEST_SIZE=1 (64-byte texture fetches) <-- NPOT R8 sampling
+#   0041  disable use_comp_lod on TEX_FETCH <-- fragment derivative-LOD bug
 #
 # NO per-draw warmup: the period-8 cold-start cycle is gone (kernel fix), so the
 # ghost-draw priming is not needed; runs at full FPS.
@@ -32,8 +40,6 @@
 # so stale state can't accumulate across submits and wedge the GPU on long runs.
 #
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
-
-PACKAGECONFIG:append = " freedreno"
 
 SRC_URI:append = " \
     file://0001-freedreno-add-is_a22x-helper-for-Adreno-220-225.patch \
@@ -51,8 +57,13 @@ SRC_URI:append = " \
     file://0035-freedreno-a2xx-skip-HW-fast-clear-under-FD_DBG-SYSME.patch \
     file://0036-freedreno-a2xx-A22X-cache-flush-use-KGSL-pattern-per.patch \
     file://0037-freedreno-a2xx-A22X-per-tile-drain-use-KGSL-pattern.patch \
-    file://0038-freedreno-A22X-auto-route-deadlock-prone-batches.patch \
-"
+    "
+
+
+#    file://0038-freedreno-A22X-auto-route-deadlock-prone-batches.patch
+#    file://0040-freedreno-a2xx-set-SQ_TEX_1-REQUEST_SIZE-1-64-byte-t.patch
+#    file://0041-freedreno-a2xx-disable-use_comp_lod-on-TEX_FETCH-der.patch
+
 
 # BISECT 2026-05-30: 0038 (auto-route heuristic) dropped to test if it's the
 # cause of surface-manager boot-time hangchecks.

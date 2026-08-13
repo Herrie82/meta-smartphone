@@ -2,10 +2,10 @@ require recipes-kernel/linux/linux-yocto.inc
 
 SECTION = "kernel"
 
-DESCRIPTION = "Linux kernel for HP Touchpad"
+DESCRIPTION = "Linux kernel for HP Touchpad Go 3G"
 
 # Mark archs/machines that this kernel supports
-COMPATIBLE_MACHINE = "tenderloin"
+COMPATIBLE_MACHINE = "shortloin3g"
 
 LIC_FILES_CHKSUM = "file://COPYING;md5=6bc538ed5bd9a7fc9398086aedcd7e46"
 
@@ -15,26 +15,23 @@ inherit kernel
 
 LINUX_VERSION_EXTENSION = "-luneos"
 LINUX_KMETA_BRANCH = "yocto-6.18"
-#LINUX_KMETA_BRANCH = "master"
 KMETA = "kernel-meta"
-KBUILD_DEFCONFIG:tenderloin = "tenderloin_debug_defconfig"
-KBUILD_DEFCONFIG:tenderloin71 = "tenderloin_debug_defconfig"
+KBUILD_DEFCONFIG:tenderloin = "shortloin_debug_defconfig"
+KBUILD_DEFCONFIG:tenderloin3g = "shortloin_debug_defconfig"
 KCONFIG_MODE = "alldefconfig"
 
 SRCREV_machine = "${AUTOREV}"
-#7.1SRCREV_meta = "52c0e5768539b2b7c92bbe8450764b0431464bc5"
 SRCREV_meta = "8ac9b1baf5d3cc1cb53a87a449b52f253dc32cab"
 
 #SRC_URI = "git:///home/jos/test/temp/mykernel;protocol=file;bareclone=1"
-#git://github.com/shr-distribution/linux.git;branch=tenderloin/6.18/upstream-patches;protocol=https;name=machine
+#git:///home/herrie/webos/touchpad-kernel/linux-6.18-tenderloin;branch=tenderloin/6.18/upstream-patches;protocol=file;name=machine
 
 SRC_URI = " \
-    git://github.com/shr-distribution/linux.git;branch=tenderloin/linux-next;protocol=https;name=machine \
+    git://github.com/shr-distribution/linux.git;branch=tenderloin/6.18/upstream-patches;protocol=https;name=machine \
     git://git.yoctoproject.org/yocto-kernel-cache;type=kmeta;name=meta;branch=${LINUX_KMETA_BRANCH};destsuffix=${KMETA} \
 "
 
-#LINUX_VERSION = "6.18"
-LINUX_VERSION = "7.1-rc1"
+LINUX_VERSION = "6.18"
 PV = "${LINUX_VERSION}+git"
 # for bumping PR bump MACHINE_KERNEL_PR in the machine config
 inherit machine_kernel_pr
@@ -79,7 +76,7 @@ do_deploy:append() {
 
     # now pack kernel and initramfs together
     echo "now pack kernel and initramfs together..."
-    uboot-mkimage  -A arm -O Linux -T multi -n 'HP Touchpad boot' -C none \
+    uboot-mkimage  -A arm -O Linux -T multi -n 'HP Touchpad Go 3G boot' -C none \
         -e 0 -a 0 -d ${B}/arch/${ARCH}/boot/uImage:${DEPLOY_DIR_IMAGE}/${INITRAMFS_UIMAGE} \
         ${DEPLOYDIR}/uImage-dtb-${KERNEL_IMAGETYPE}
 }

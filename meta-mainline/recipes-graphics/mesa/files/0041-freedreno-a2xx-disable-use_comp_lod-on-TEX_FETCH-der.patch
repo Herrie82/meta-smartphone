@@ -1,0 +1,80 @@
+From 220070472e741348dbc736c62eac90e2a153847d Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Sat, 6 Jun 2026 09:30:02 +0200
+Subject: [PATCH] freedreno/a2xx: disable use_comp_lod on TEX_FETCH
+ (derivative-LOD bug)
+
+Setting use_comp_lod=1 forces the A2xx fragment shader sampler to
+compute LOD from screen-space derivatives of the texture coordinates,
+even when the sampler has NEAREST filtering + BASEMAP mip filter
+(which together should make any LOD computation irrelevant for
+sampling).
+
+For fragment shaders that sample at coordinates with extreme du/dv
+across the fragment quad -- e.g. a custom byte-address de-tile
+shader for Samsung NV12 input that jumps by 2048 bytes per 64-pixel
+tile column on every other fragment -- the implicit-LOD path
+produces visibly wrong fetches. Concrete repro: vidc_gl_play on the
+HP TouchPad's A220 shows every other 64-pixel tile column offset by
+one tile-row (32 px) vertically, even though the GLSL math is
+provably correct (CPU de-tile with the same formula on the same
+bytes produces a pixel-perfect image).
+
+Disable the computed-LOD path on A2xx; the use_reg_lod path
+remains honoured when shaders provide an explicit LOD (src_count
+== 2), and the mip filter setting in the sampler view still
+controls which level is fetched (BASEMAP -> always level 0).
+
+Note: fragment_shader_texture_lod cap in freedreno_screen.c is
+gated to a3xx+ only, so GLES2 shaders on a2xx can't ask for an
+explicit LOD via texture2DLodEXT either. This change makes the
+implicit fragment-sampling path agree with what NEAREST+BASEMAP
+should already be doing.
+
+Upstream-Status: Pending
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ .../drivers/freedreno/a2xx/ir2_assemble.c     | 26 ++++++++++++++++++-
+ 1 file changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/ir2_assemble.c b/src/gallium/drivers/freedreno/a2xx/ir2_assemble.c
+index 3b0f7d0bb80..16592786963 100644
+--- a/src/gallium/drivers/freedreno/a2xx/ir2_assemble.c
++++ b/src/gallium/drivers/freedreno/a2xx/ir2_assemble.c
+@@ -201,7 +201,31 @@ fill_instr(struct ir2_context *ctx, struct ir2_sched_instr *sched, instr_t *bc,
+          tex->arbitrary_filter = ARBITRARY_FILTER_USE_FETCH_CONST;
+          tex->vol_mag_filter = TEX_FILTER_USE_FETCH_CONST;
+          tex->vol_min_filter = TEX_FILTER_USE_FETCH_CONST;
+-         tex->use_comp_lod = ctx->so->type == MESA_SHADER_FRAGMENT;
++         /*
++          * Setting use_comp_lod=1 forces the A2xx sampler to compute LOD
++          * from screen-space derivatives of the texture coordinates --
++          * even when the sampler has NEAREST filtering + BASEMAP mip
++          * filter (which together should make any LOD computation
++          * irrelevant). For fragment shaders that sample at coordinates
++          * with extreme du/dv across a fragment quad -- e.g. a custom
++          * byte-address de-tile shader for Samsung NV12 input that jumps
++          * by 2048 bytes per 64-pixel tile column -- the implicit-LOD
++          * path produces visibly wrong fetches (every other tile column
++          * shows content offset by one tile-row vertically). Disable
++          * the computed-LOD path; the use_reg_lod path remains honoured
++          * when shaders provide an explicit LOD (src_count == 2) via
++          * the GL_EXT_shader_texture_lod extension, and the mip filter
++          * setting still controls what mip level is actually fetched
++          * (BASEMAP -> always level 0).
++          *
++          * Note: the fragment_shader_texture_lod cap in
++          * src/gallium/drivers/freedreno/freedreno_screen.c is gated to
++          * a3xx+ only, so GLES2 shaders on a2xx can't request explicit
++          * LOD via texture2DLodEXT either. This change makes the
++          * implicit path agree with the no-mip-no-anisotropic NEAREST
++          * sampling that A2xx is the only architecture able to use.
++          */
++         tex->use_comp_lod = 0;
+          tex->use_reg_lod = instr->src_count == 2;
+          tex->sample_location = SAMPLE_CENTER;
+          tex->tx_coord_denorm = instr->fetch.tex.is_rect;
+-- 
+2.43.0
+

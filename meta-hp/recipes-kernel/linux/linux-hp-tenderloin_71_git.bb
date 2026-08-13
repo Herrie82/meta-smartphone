@@ -18,7 +18,6 @@ LINUX_KMETA_BRANCH = "yocto-6.18"
 #LINUX_KMETA_BRANCH = "master"
 KMETA = "kernel-meta"
 KBUILD_DEFCONFIG:tenderloin = "tenderloin_debug_defconfig"
-KBUILD_DEFCONFIG:tenderloin71 = "tenderloin_debug_defconfig"
 KCONFIG_MODE = "alldefconfig"
 
 SRCREV_machine = "${AUTOREV}"
