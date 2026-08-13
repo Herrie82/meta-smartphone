@@ -21,23 +21,23 @@ SRC_URI = " \
     file://journald-debug.conf \
 "
 
-S = "${WORKDIR}"
+S = "${UNPACKDIR}"
 
 do_install() {
     # Install systemd services
     install -d ${D}${systemd_system_unitdir}
-    install -m 0644 ${WORKDIR}/luneos-debug-usbnet.service ${D}${systemd_system_unitdir}/
-    install -m 0644 ${WORKDIR}/luneos-debug-telnet.service ${D}${systemd_system_unitdir}/
-    install -m 0644 ${WORKDIR}/luneos-debug-persistent-log.service ${D}${systemd_system_unitdir}/
-    install -m 0644 ${WORKDIR}/luneos-debug-usb-watchdog.service ${D}${systemd_system_unitdir}/
+    install -m 0644 ${UNPACKDIR}/luneos-debug-usbnet.service ${D}${systemd_system_unitdir}/
+    install -m 0644 ${UNPACKDIR}/luneos-debug-telnet.service ${D}${systemd_system_unitdir}/
+    install -m 0644 ${UNPACKDIR}/luneos-debug-persistent-log.service ${D}${systemd_system_unitdir}/
+    install -m 0644 ${UNPACKDIR}/luneos-debug-usb-watchdog.service ${D}${systemd_system_unitdir}/
 
     # Install USB watchdog script
     install -d ${D}${libexecdir}
-    install -m 0755 ${WORKDIR}/usb-watchdog.sh ${D}${libexecdir}/
+    install -m 0755 ${UNPACKDIR}/usb-watchdog.sh ${D}${libexecdir}/
 
     # Install journald debug config
     install -d ${D}${sysconfdir}/systemd/journald.conf.d
-    install -m 0644 ${WORKDIR}/journald-debug.conf ${D}${sysconfdir}/systemd/journald.conf.d/debug.conf
+    install -m 0644 ${UNPACKDIR}/journald-debug.conf ${D}${sysconfdir}/systemd/journald.conf.d/debug.conf
 }
 
 SYSTEMD_SERVICE:${PN} = " \

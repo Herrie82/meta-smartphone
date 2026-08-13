@@ -20,11 +20,11 @@ SRC_URI = " \
     file://mpu3050_dmp.bin \
 "
 
-S = "${WORKDIR}"
+S = "${UNPACKDIR}"
 
 do_install() {
     install -d ${D}${nonarch_base_libdir}/firmware/invensense
-    install -m 0644 ${WORKDIR}/mpu3050_dmp.bin ${D}${nonarch_base_libdir}/firmware/invensense/mpu3050_dmp.bin
+    install -m 0644 ${UNPACKDIR}/mpu3050_dmp.bin ${D}${nonarch_base_libdir}/firmware/invensense/mpu3050_dmp.bin
 }
 
 FILES:${PN} = "${nonarch_base_libdir}/firmware"
