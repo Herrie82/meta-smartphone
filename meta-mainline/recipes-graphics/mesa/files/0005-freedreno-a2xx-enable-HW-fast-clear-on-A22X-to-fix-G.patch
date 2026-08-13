@@ -1,0 +1,71 @@
+From 44dce9245f1b49b3f7079aa86df558a54bf27759 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Sat, 23 May 2026 16:03:07 +0200
+Subject: [PATCH 5/7] freedreno/a2xx: enable HW fast-clear on A22X to fix GMEM
+ background clear
+
+On A220 the non-fast clear-quad path does not clear the GMEM tiles: a
+glClear leaves the background unwritten (reads back as 0,0,0,0 -
+transparent / "white", instead of the glClearColor). Confirmed with a probe
+that wrote a hardcoded colour to the clear shader's CONST[0] and never saw
+it reach the framebuffer in GMEM mode (it works in sysmem). The HW
+fast-clear (CLEAR_COLOR + RB_COPY_CONTROL) is the only path that actually
+clears GMEM, but fd2_clear_fast() early-returned for anything not a20x
+("TODO: need to test performance on a22x").
+
+Enable it for a2xx, and extend the 32K GMEM page alignment the fast-clear
+requires from a20x to a2xx in gmem_key_init() (freedreno_gmem.c). The
+background now clears to the correct colour (gl-capture: 26,51,76,255 for
+glClearColor(0.1,0.2,0.3,1.0)), deterministically, with no GPU lockup -
+the CP_LOAD_CONSTANT_CONTEXT this path uses is stable in this usage.
+
+Upstream-Status: Pending
+
+Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_draw.c  | 11 +++++++++--
+ src/gallium/drivers/freedreno/freedreno_gmem.c |  3 ++-
+ 2 files changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
+index cc152eb9b11..d3b4b336b06 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
+@@ -445,8 +445,15 @@ fd2_clear_fast(struct fd_context *ctx, unsigned buffers,
+    int depth_size = -1; /* -1: no clear, 0: clear 16-bit, 1: clear 32-bit */
+    int color_size = -1;
+ 
+-   /* TODO: need to test performance on a22x */
+-   if (!is_a20x(ctx->screen))
++   /*
++    * Enable the HW fast-clear for A22X too. The non-fast clear-quad path does
++    * NOT clear the GMEM tiles on A220 (the background comes out unwritten,
++    * 0,0,0,0 = transparent/"white"), so the fast clear (which clears GMEM via
++    * CLEAR_COLOR + RB_COPY_CONTROL) is the only working GMEM clear. Note this
++    * path uses CP_LOAD_CONSTANT_CONTEXT (below) which has been a hang hazard
++    * on a2xx - watch for GPU lockups.
++    */
++   if (!is_a2xx(ctx->screen))
+       return false;
+ 
+    if (buffers & PIPE_CLEAR_COLOR)
+diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
+index 9f7124dfdee..bba981a4ca8 100644
+--- a/src/gallium/drivers/freedreno/freedreno_gmem.c
++++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
+@@ -525,9 +525,10 @@ gmem_key_init(struct fd_batch *batch, bool assume_zs, bool no_scis_opt)
+       key->height = scissor->maxy + 1 - key->miny;
+    }
+ 
+-   if (is_a20x(screen) && batch->cleared) {
++   if (is_a2xx(screen) && batch->cleared) {
+       /* under normal circumstances the requirement would be 4K
+        * but the fast clear path requires an alignment of 32K
++       * (a22x uses the fast clear too - see fd2_clear_fast)
+        */
+       key->gmem_page_align = 8;
+    } else if (is_a6xx(screen)) {
+-- 
+2.43.0
+

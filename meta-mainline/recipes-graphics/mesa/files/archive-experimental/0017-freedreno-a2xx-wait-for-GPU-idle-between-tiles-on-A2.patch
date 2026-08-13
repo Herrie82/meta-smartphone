@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Wed, 27 May 2026 19:47:37 +0200
+Subject: [PATCH] freedreno/a2xx: wait for GPU idle between tiles on A22X
+
+Even with the per-draw CACHE_FLUSH_TS+WFI (previous patch) fixing the
+color tile back-end, the heaviest depth/restore scenes still hangcheck-
+recover on A22X: glmark2 -b desktop (16 bins of 256x192, batch_restore=20)
+reaches a "gpu lockup" with the completed fence still slowly advancing --
+the 3D back-end is stuck busy, not a hard hang.
+
+fd2_emit_tile_renderprep reprograms RB_COLOR_INFO, the window offset/
+scissor, etc. for the next tile while this tile's mem2gmem restore and the
+previous tile's gmem2mem resolve are still in flight. The per-draw cache
+flush does not cover those restore/resolve blits, so the tiles race.
+
+A plain OUT_WFI is insufficient on A22X (see the pre-draw VGT-DMA
+RBBM_STATUS poll in fd2_draw.c), so reuse that same CP_WAIT_REG_EQ
+RBBM_STATUS poll at the start of each tile's renderprep, waiting for
+GUI_ACTIVE (bit 31) to clear so the previous tile has fully drained
+before reprogramming. Idle RBBM_STATUS reads 0x110; busy 0xc40103xx.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Upstream-Status: Pending
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 21 +++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+index 8f82e11a313..6f49e6f4fc7 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -821,6 +821,27 @@ fd2_emit_tile_renderprep(struct fd_batch *batch,
+    struct pipe_framebuffer_state *pfb = &batch->framebuffer;
+    enum pipe_format format = pipe_surface_format(&pfb->cbufs[0]);
+ 
++   /* A22X: the per-tile state reprogramming below (RB_COLOR_INFO, window
++    * offset/scissor, ...) races this tile's mem2gmem restore and the
++    * previous tile's gmem2mem resolve, which are still in flight -- there
++    * is no implicit sync between tiles. On heavy depth/restore scenes
++    * (e.g. glmark2 desktop: 16 bins, batch_restore=20) that race leaves the
++    * 3D back-end stuck busy (hangcheck "gpu lockup" with the fence still
++    * creeping). The per-draw CACHE_FLUSH_TS+WFI does not cover the restore/
++    * resolve blits, so serialise tiles here: wait for the GPU to go idle
++    * before reprogramming. A plain OUT_WFI is insufficient on A22X (see the
++    * pre-draw VGT-DMA RBBM_STATUS poll in fd2_draw.c), so reuse the same
++    * RBBM_STATUS poll, waiting for GUI_ACTIVE (bit 31) to clear -- i.e. the
++    * previous tile's draws + resolve have fully drained. (Idle RBBM_STATUS
++    * reads 0x110; busy reads 0xc40103xx.) */
++   if (is_a22x(ctx->screen)) {
++      OUT_PKT3(ring, CP_WAIT_REG_EQ, 4);
++      OUT_RING(ring, 0x000005d0); /* RBBM_STATUS */
++      OUT_RING(ring, 0x00000000); /* reference value: idle */
++      OUT_RING(ring, 0x80000000); /* mask: GUI_ACTIVE */
++      OUT_RING(ring, 0x00000001); /* poll interval */
++   }
++
+    OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+    OUT_RING(ring, CP_REG(REG_A2XX_RB_COLOR_INFO));
+    OUT_RING(ring, A2XX_RB_COLOR_INFO_SWAP(fmt2swap(format)) |

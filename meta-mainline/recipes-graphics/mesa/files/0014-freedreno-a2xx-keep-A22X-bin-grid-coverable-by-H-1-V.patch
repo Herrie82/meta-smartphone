@@ -1,0 +1,74 @@
+From fc07065d80feaad7d57776ef794633ddc02f8424 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Wed, 27 May 2026 11:07:09 +0200
+Subject: [PATCH] freedreno/a2xx: keep A22X bin grid coverable by H=1 VSC pipes
+
+The companion patch caps a22x VSC pipe width at 2 bins (W<=2), matching
+the legacy webOS/KGSL capture.  But KGSL's pipes are also always exactly
+1 bin tall (H=1) -- it never spans rows -- and it keeps the bin grid to
+<=3 rows (4x3, 5x2, 2x3).
+
+freedreno can pick taller grids because layout_gmem() counts the
+depth/stencil buffer in the per-bin GMEM budget (KGSL sizes bins for
+color only), so depth scenes get short bins / many rows (e.g. 3x5).
+Such a grid cannot be covered by the 8 hardware pipes at W<=2/H=1, so the
+pipe assignment is forced to H=2, which the a220 binner mis-handles ->
+garbage auto-visibility -> tile corruption and a back-end wedge.
+
+After the normal layout, for a22x drop a row at a time (growing columns
+to keep the GMEM and tile_max_w fit) until the grid satisfies
+DIV_ROUND_UP(nbins_x, 2) * nbins_y <= num_vsc_pipes, i.e. it can be
+covered by the 8 pipes with W<=2 and H=1 -- the KGSL invariant.
+
+Upstream-Status: Pending
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ .../drivers/freedreno/freedreno_gmem.c        | 31 +++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_gmem.c b/src/gallium/drivers/freedreno/freedreno_gmem.c
+index df894016cf0..a5ea50ad9eb 100644
+--- a/src/gallium/drivers/freedreno/freedreno_gmem.c
++++ b/src/gallium/drivers/freedreno/freedreno_gmem.c
+@@ -254,6 +254,37 @@ calc_nbins(struct gmem_key *key, struct fd_gmem_stateobj *gmem)
+    }
+ 
+    layout_gmem(key, nbins_x, nbins_y, gmem);
++
++   /*
++    * a220: the hardware tile-binner is covered by num_vsc_pipes (8) VSC
++    * pipes, and the captured webOS/KGSL driver only ever programs pipes
++    * that span at most 2 bins in X and exactly 1 bin in Y (W<=2, H=1; see
++    * the a22x VSC pipe-width cap in gmem_stateobj_init).  Covering the grid
++    * under that rule needs:
++    *
++    *    DIV_ROUND_UP(nbins_x, 2) * nbins_y <= num_vsc_pipes
++    *
++    * Because layout_gmem() counts the depth/stencil buffer in the per-bin
++    * GMEM budget (KGSL sizes bins for color only), freedreno tends to pick
++    * short bins / tall grids for depth scenes (e.g. 3x5) that violate this
++    * and force a pipe to be >1 bin tall, which the a220 binner mis-handles
++    * (garbage visibility -> tile corruption / back-end wedge).
++    *
++    * Reshape for a22x: drop a row at a time (growing columns to keep the
++    * GMEM and tile_max_w fit) until the grid fits the 8 pipes at H=1.
++    */
++   if (is_a22x(screen)) {
++      const uint32_t npipes = screen->info->num_vsc_pipes;
++      while ((DIV_ROUND_UP(nbins_x, 2) * nbins_y) > npipes && nbins_y > 1) {
++         nbins_y--;
++         /* taller bins now: grow columns until they fit GMEM + tile_max_w */
++         while ((div_align(key->width, nbins_x, screen->info->tile_align_w) >
++                 max_width) ||
++                !layout_gmem(key, nbins_x, nbins_y, gmem))
++            nbins_x++;
++      }
++      layout_gmem(key, nbins_x, nbins_y, gmem);
++   }
+ }
+ 
+ static struct fd_gmem_stateobj *
+-- 
+2.43.0
+

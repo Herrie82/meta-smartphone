@@ -1,0 +1,114 @@
+From f18941bb21acc51fa1367250af7cba51fdf63d94 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Sat, 30 May 2026 05:30:45 +0200
+Subject: [PATCH] freedreno/a2xx: A22X per-draw KGSL-pattern back-pressure
+ (CACHE_FLUSH + WAIT_REG_EQ(RBBM_DEBUG bit24))
+
+Patch '0020 skip per-draw cache flush on A22X' made per-draw cache flush a
+no-op on A22X, with the rationale that the per-tile drain (0018) is
+sufficient for correctness and the OLD heavy per-draw pattern
+(CACHE_FLUSH_TS + WFI) was crippling perf. That works for binner_test heavy
+and surface-manager, but heavy multi-FBO compositing scenes (glmark2
+desktop:blur w=4) hit a back-end pipeline deadlock:
+
+  RBBM_STATUS at hang: 0xc4010310
+  = GUI_ACTIVE + RB_CNTX_BUSY + VGT_BUSY + CP_NRT_BUSY
+  + CP cmd FIFO 1/16 free + HIRQ/CPRQ pending
+
+i.e. draws stack up faster than the EDRAM back-end can drain. Sysmem
+rendering avoids the deadlock entirely (KGSL ships this way -- bins=0 in
+all captures) but freedreno's sysmem path has its own rendering correctness
+bugs (glmark2 --validate fails on build/shading/bump in sysmem mode, all of
+which pass cleanly under GMEM), so going to sysmem is not viable as a
+short-term shipping option.
+
+Captured legacy KGSL traces (memory/reference_kgsl_vs_freedreno_heavy_scene)
+show KGSL emits ~1.8 WFI/draw, with the per-draw pattern being:
+
+  CACHE_FLUSH                    (plain event, no _TS)
+  WAIT_REG_EQ(0x39b mask=1<<24 val=1<<24)
+
+Bit 24 of RBBM_DEBUG is a vendor opaque cache-flush+EDRAM-coherency
+completion bit; waiting on it per draw creates per-draw back-pressure on
+the back-end without doing a full pipeline drain. This is the structural
+difference KGSL has that freedreno lacks -- per-draw back-pressure that
+prevents the producer-consumer chain from saturating.
+
+This patch replaces the A22X 'skip per-draw' with the lightweight KGSL
+pattern. Per-tile drain (0018) is retained.
+
+Validated against the captured blur RD dump
+(memory/project_a220_blur_hang_cmdstream_analysis): the 19 existing
+WAIT_REG_EQ in the blur submit all target RBBM_STATUS (0x5d0) and serve
+the SHADER_BASES drain, not cache-flush completion. So this patch adds
+a different sync pattern at a different point in the submit, not a
+duplicate.
+
+Upstream-Status: Pending
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_draw.c | 44 ++++++++++++++-----
+ 1 file changed, 32 insertions(+), 12 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
+index a627fdbb06c..fb656099716 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_draw.c
+@@ -32,21 +32,41 @@ pack_rgba(enum pipe_format format, const float *rgba)
+ static void
+ emit_cacheflush(struct fd_context *ctx, struct fd_ringbuffer *ring)
+ {
+-   /* A22X: skip the per-draw cache flush entirely. The strong drain
+-    * (CACHE_FLUSH_TS + WFI) that the resolve race actually needs is emitted
+-    * ONCE PER TILE in prepare_tile_fini_ib (0018), and EDRAM (the framebuffer
+-    * cache) is naturally coherent within a tile across draws.
++   /* A22X: emit per-draw the LEGACY KGSL pattern -- plain CACHE_FLUSH event
++    * followed by WAIT_REG_EQ(RBBM_DEBUG, bit24). This is a LIGHTWEIGHT
++    * coherency wait, not a full pipeline drain like CACHE_FLUSH_TS+WFI was.
+     *
+-    * Measured 2026-05-28: per-draw 12x CACHE_FLUSH was producing 294
+-    * CP_EVENT_WRITE per frame on A22X (legacy KGSL emits ~11/frame for the
+-    * SAME workload, a 27x bloat) and contributing to the 5.5x freedreno-vs-KGSL
+-    * blur perf gap on the same Adreno 220 hardware (binner_test heavy:
+-    * KGSL 5.45 fps vs freedreno 0.99 fps).
++    * Background: 0018 + 0020 had moved the per-draw drain to per-tile and
++    * made per-draw a no-op on A22X. The reasoning was that the OLD per-draw
++    * pattern (12x CACHE_FLUSH or CACHE_FLUSH_TS+WFI) was either no-op or
++    * crippling, and the per-tile drain was sufficient for correctness. That
++    * is true for binner_test heavy and surface-manager (which is why the
++    * stack works there), but the heavy multi-FBO compositing scenes
++    * (glmark2 desktop:blur w=4) hit a back-end pipeline deadlock
++    * RBBM_STATUS=0xc4010310 -- VGT+RB+CP all busy with CP cmd FIFO 1/16
++    * free, because draws stack up faster than the EDRAM back-end can drain.
+     *
+-    * A20X keeps the original 12x async CACHE_FLUSH (no per-tile drain there,
+-    * the legacy behaviour is the proven correctness for that GPU). */
+-   if (is_a22x(ctx->screen))
++    * Captured legacy KGSL traces show ~1.8 WFI/draw, with the per-draw
++    * pattern being CACHE_FLUSH + WAIT_REG_EQ(0x39b mask=1<<24 val=1<<24).
++    * That bit-24 of RBBM_DEBUG is a vendor opaque cache-flush+EDRAM-
++    * coherency completion bit -- waiting on it per draw creates per-draw
++    * back-pressure on the back-end without doing a full pipeline drain.
++    *
++    * This restores the back-pressure KGSL has and we lack, using the
++    * lightweight pattern instead of the heavy CACHE_FLUSH_TS+WFI 0018
++    * shipped. Expected to fix desktop:blur w=4 without crippling
++    * binner_test heavy. See memory/project_a220_blur_hang_cmdstream_analysis. */
++   if (is_a22x(ctx->screen)) {
++      OUT_PKT3(ring, CP_EVENT_WRITE, 1);
++      OUT_RING(ring, CACHE_FLUSH);
++
++      OUT_PKT3(ring, CP_WAIT_REG_EQ, 4);
++      OUT_RING(ring, REG_A2XX_RBBM_DEBUG);  /* 0x39b */
++      OUT_RING(ring, 1u << 24);             /* expected: bit 24 set */
++      OUT_RING(ring, 1u << 24);             /* mask: only check bit 24 */
++      OUT_RING(ring, 1);                    /* 1 poll/iter */
+       return;
++   }
+ 
+    unsigned i;
+    for (i = 0; i < 12; i++) {
+-- 
+2.43.0
+

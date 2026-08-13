@@ -1,0 +1,97 @@
+From 19a96f187fc7caf1bb2f75c1018bb3bbba5470c9 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Mon, 11 May 2026 15:30:00 +0200
+Subject: [PATCH] freedreno/a2xx: write per-tile VGT_CURRENT_BIN_ID for A22X +
+ skip BIN_ID=0 init
+
+Combined fix for the A22X period-8 tile-coverage cycle. Visual analysis
+confirmed the cycle is GMEM tile-binning visibility-stream variation
+(different subsets of the 2x3 GMEM tile grid rendered per submit, not
+"wrong colour" interpolation).
+
+Mesa freedreno disables hw_binning for A22X (fd2_gmem.c:60-64 marked
+TODO). The hardware binner is still active and uses internal state to
+choose tile coverage when VGT_CURRENT_BIN_ID_MIN=MAX=0, producing 8
+distinct visibility patterns per submit.
+
+Two-part fix:
+
+1. In fd2_emit_tile_init, skip the BIN_ID=0 write entirely for A22X.
+   The 0 value triggers the indeterminate binner-state behaviour.
+
+2. In fd2_emit_tile_renderprep, write per-tile non-zero BIN_ID using
+   the encoding observed in the closed-source webOS libGLESv2.so decomp:
+   bin_id = (col + 1) | (row << 3).
+
+For our 2x3 GMEM tile layout the per-tile bin_ids are 0x01, 0x02,
+0x09, 0x0a, 0x11, 0x12 - all non-zero, all distinct.
+
+Earlier attempts at this (0090 v1) used the A20X reference encoding
+((row+1)<<3 | (col+1)) and were null. Deeper analysis showed webOS
+uses a different encoding (+1 only on col, not row), which this v2
+matches.
+
+Upstream-Status: Pending
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 37 +++++++++++++++----
+ 1 file changed, 30 insertions(+), 7 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+index dfdb9c9ab01..af0b648a0c2 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -541,14 +541,20 @@ fd2_emit_tile_init(struct fd_batch *batch) assert_dt
+    }
+    util_dynarray_clear(&batch->gmem_patches);
+ 
+-   /* set to zero, for some reason hardware doesn't like certain values */
+-   OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+-   OUT_RING(ring, CP_REG(REG_A2XX_VGT_CURRENT_BIN_ID_MIN));
+-   OUT_RING(ring, 0);
++   /* set to zero, for some reason hardware doesn't like certain values
++    *
++    * A22X: skip the zero-write. Per-tile non-zero BIN_ID writes happen
++    * in fd2_emit_tile_renderprep below; let those be the only writes.
++    */
++   if (!is_a22x(ctx->screen)) {
++      OUT_PKT3(ring, CP_SET_CONSTANT, 2);
++      OUT_RING(ring, CP_REG(REG_A2XX_VGT_CURRENT_BIN_ID_MIN));
++      OUT_RING(ring, 0);
+ 
+-   OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+-   OUT_RING(ring, CP_REG(REG_A2XX_VGT_CURRENT_BIN_ID_MAX));
+-   OUT_RING(ring, 0);
++      OUT_PKT3(ring, CP_SET_CONSTANT, 2);
++      OUT_RING(ring, CP_REG(REG_A2XX_VGT_CURRENT_BIN_ID_MAX));
++      OUT_RING(ring, 0);
++   }
+ 
+    if (use_hw_binning(batch)) {
+       /* patch out unneeded memory exports by changing EXEC CF to EXEC_END
+@@ -729,6 +735,23 @@ fd2_emit_tile_renderprep(struct fd_batch *batch,
+       /* TODO only emit this when tile->p changes */
+       OUT_PKT3(ring, CP_SET_DRAW_INIT_FLAGS, 1);
+       OUT_RELOC(ring, pipe_bo, 0, 0, 0);
++   } else if (is_a22x(ctx->screen)) {
++      /*
++       * A22X period-8 render-cycle fix: explicitly write per-tile bin ID.
++       * Encoding from webOS libGLESv2.so decomp: (col+1) | (row<<3).
++       * For 2x3 layout: 0x01, 0x02, 0x09, 0x0a, 0x11, 0x12 - all non-zero.
++       */
++      uint32_t col = tile->xoff / tile->bin_w;
++      uint32_t row = tile->yoff / tile->bin_h;
++      uint32_t bin_id = (col + 1) | (row << 3);
++
++      OUT_PKT3(ring, CP_SET_CONSTANT, 2);
++      OUT_RING(ring, CP_REG(REG_A2XX_VGT_CURRENT_BIN_ID_MIN));
++      OUT_RING(ring, bin_id);
++
++      OUT_PKT3(ring, CP_SET_CONSTANT, 2);
++      OUT_RING(ring, CP_REG(REG_A2XX_VGT_CURRENT_BIN_ID_MAX));
++      OUT_RING(ring, bin_id);
+    }
+ }
+ 
+-- 
+2.43.0
+

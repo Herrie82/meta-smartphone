@@ -1,0 +1,72 @@
+From 83da80703631800b77e7138f9188db47629282ba Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Sat, 30 May 2026 07:14:30 +0200
+Subject: [PATCH 2/2] freedreno/a2xx: A22X per-tile drain use legacy KGSL
+ pattern (CACHE_FLUSH + WAIT_REG_EQ(RBBM_DEBUG bit24))
+
+prepare_tile_fini_ib() previously used a plain OUT_WFI between the per-tile
+draws and the EDRAM_COPY resolve, sufficient to ensure the mode-transition
+COLOR_DEPTH <-> EDRAM_COPY is on an idle pipeline. On A220 a plain WFI does
+not wait for VGT DMA, so a tile's draws can leak past the resolve and write
+stale data.
+
+CACHE_FLUSH_TS + WFI works (heavier path; needs a scratch buffer for the
+timestamp), but the production legacy KGSL driver -- which renders the same
+heavy multi-bin scenes on the same A220 silicon without ever wedging --
+uses a lighter pattern at the same boundary:
+
+  CACHE_FLUSH                    (plain event, no _TS)
+  WAIT_REG_EQ(0x39b mask=1<<24 val=1<<24)
+
+Bit 24 of REG_A2XX_RBBM_DEBUG is a vendor opaque cache-flush+EDRAM-
+coherency completion bit (see the per-draw pattern in fd2_draw.c::
+emit_cacheflush for the same construct).
+
+Consolidates 0018 + 0032 from the previous patch series (drops the
+unused scratch_buf+seqno path).
+
+Upstream-Status: Pending
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 24 +++++++++++++++----
+ 1 file changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+index cfd2af48dbc..e2a74bd14cc 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -182,11 +182,25 @@ prepare_tile_fini_ib(struct fd_batch *batch) assert_dt
+    OUT_RING(ring, fui((float)gmem->bin_h / 2.0f)); /* YSCALE */
+    OUT_RING(ring, fui((float)gmem->bin_h / 2.0f)); /* YOFFSET */
+ 
+-   /* A22X: WFI before changing RB_MODECONTROL to ensure pipeline is idle.
+-    * Mode transitions between COLOR_DEPTH and EDRAM_COPY require sync.
+-    */
+-   if (!is_a20x(ctx->screen))
+-      OUT_WFI(ring);
++   /* A22X: per-tile drain before the EDRAM_COPY resolve, using the legacy
++    * KGSL pattern -- plain CACHE_FLUSH event + WAIT_REG_EQ on RBBM_DEBUG
++    * (0x39b) bit 24. The tile's draws must have fully landed in GMEM before
++    * the resolve reads it back, and the mode transition COLOR_DEPTH <->
++    * EDRAM_COPY also needs sync. Plain OUT_WFI is insufficient on A220 (it
++    * does not wait for VGT DMA); CACHE_FLUSH_TS + WFI works but is heavier
++    * than what KGSL emits and equivalent in coverage. RBBM_DEBUG bit 24 is
++    * a vendor opaque cache-flush+EDRAM-coherency completion bit (see
++    * fd2_draw.c::emit_cacheflush comment for the per-draw pattern). */
++   if (!is_a20x(ctx->screen)) {
++      OUT_PKT3(ring, CP_EVENT_WRITE, 1);
++      OUT_RING(ring, CACHE_FLUSH);
++
++      OUT_PKT3(ring, CP_WAIT_REG_EQ, 4);
++      OUT_RING(ring, REG_A2XX_RBBM_DEBUG);  /* 0x39b */
++      OUT_RING(ring, 1u << 24);             /* expected: bit 24 set */
++      OUT_RING(ring, 1u << 24);             /* mask: only check bit 24 */
++      OUT_RING(ring, 1);                    /* 1 poll/iter */
++   }
+ 
+    OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+    OUT_RING(ring, CP_REG(REG_A2XX_RB_MODECONTROL));
+-- 
+2.43.0
+

@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Thu, 28 May 2026 19:25:12 +0200
+Subject: [PATCH] freedreno/drm/msm: don't fence-wait in FD_RD_DUMP=full to
+ allow capturing hung submits
+
+When FD_RD_DUMP=full is set, mesa was calling fd_pipe_wait() on the submit's
+fence BEFORE writing the .rd file. The intent: dump BO contents that reflect
+the post-execution state.
+
+Side effect: if the GPU hangs on a submit AND the kernel's hangcheck recovery
+drops the pending submit (as the msm recover_worker does after recover_burst_
+max consecutive recoveries -- see drivers/gpu/drm/msm/msm_gpu.c), the fence
+never signals. mesa blocks forever in fd_pipe_wait. The .rd file is opened
+but never written -- the cmdstream that triggered the hang is lost.
+
+For root-cause investigation we need the PRE-execution cmdstream, not the
+post-execution BO state. Skip the fence-wait; BO contents are still dumped
+from the CPU-visible map of the same allocations which are intact regardless
+of GPU progress.
+
+Investigated 2026-05-28 for the a220 glmark2 desktop:blur hang -- without
+this change, the blur cmdstream that triggers RBBM_STATUS=0xc4010310 GPU
+pipeline deadlock could not be captured.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Upstream-Status: Pending
+---
+ src/freedreno/drm/msm/msm_priv.h | 17 +++++++++++------
+ 1 file changed, 11 insertions(+), 6 deletions(-)
+
+diff --git a/src/freedreno/drm/msm/msm_priv.h b/src/freedreno/drm/msm/msm_priv.h
+index ea7422575f9..e636c481e11 100644
+--- a/src/freedreno/drm/msm/msm_priv.h
++++ b/src/freedreno/drm/msm/msm_priv.h
+@@ -124,12 +124,17 @@ msm_dump_rd(struct fd_pipe *pipe, struct drm_msm_gem_submit *req)
+        !fd_rd_output_begin(rd, UINT_MAX, req->fence))
+       return;
+ 
+-   if (FD_RD_DUMP(FULL)) {
+-      fd_pipe_wait(pipe, &(struct fd_fence) {
+-         /* this is cheating a bit, but msm_pipe_wait only needs kfence */
+-         .kfence = req->fence,
+-      });
+-   }
++   /* DEBUG (a22x hang investigation 2026-05-28): originally FD_RD_DUMP(FULL)
++    * waits for the submit's fence to complete here so the dumped BO contents
++    * reflect the post-execution state. But if the GPU hangs on this submit and
++    * the kernel's hangcheck-recovery DROPS the pending submit (recover_burst
++    * threshold), the fence never signals and this wait blocks forever -- which
++    * means the .rd file stays empty and we can't see what cmdstream caused the
++    * hang in the first place. For the a220 desktop:blur hang investigation we
++    * need the PRE-execution cmdstream more than post-execution BO state, so
++    * skip the fence-wait. BO contents will still be dumped from the CPU-visible
++    * map of the same allocations (which are intact regardless of GPU progress).
++    */
+ 
+    const char *procname = util_get_process_name();
+    fd_rd_output_write_section(rd, RD_CHIP_ID, &to_msm_pipe(pipe)->chip_id, 8);

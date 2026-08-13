@@ -1,0 +1,95 @@
+From 0438d629e2585e1ef4f4a0215d1222bf6e4b6115 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Sat, 9 May 2026 06:44:11 +0200
+Subject: [PATCH 10/10] freedreno/a2xx: aggressive cache flush+invalidate at
+ batch start (A22X)
+
+gl-capture pixel-diff experiments isolated cross-process GPU-side
+nondeterminism: 10 consecutive runs of the same deterministic test
+program emit byte-identical PM4 cmdstreams (FD_RD_DUMP=enable
+confirmed - md5 of all .rd files identical, diff -q silent) but
+produce different pixel output across runs. Mesa is doing its job;
+the GPU is producing different output for byte-identical input.
+
+The remaining sources of run-to-run variance for byte-identical
+cmdstreams are GPU-internal caches/SRAMs that retain data from a
+previous submit (potentially across processes / DRM clients):
+
+  - VPC vertex parameter cache (drained via VS_FETCH_DONE event)
+  - Texture/L2 caches (TC_CNTL_STATUS L2_INVALIDATE - already
+    present later in fd2_emit_restore)
+  - SQ instruction & shader-constant caches (CACHE_FLUSH_AND_INV
+    event flushes both)
+  - Write-coalesce drain (SC_WAIT_WC)
+
+Issue the strongest A22X-available flush sequence at the start of
+fd2_emit_restore (right after the existing WFI), before any
+state-restore writes, so each batch starts from a clean GPU state
+regardless of what previous submits or clients left behind.
+
+Cheap once-per-batch. A20X path is unchanged; the conservative
+event-write sequence is gated on !is_a20x() because A20X has known
+issues with these specific events that mainline already works around
+elsewhere.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+(cherry picked from commit 3bbc18d62619648c549950b561f9bc8ec089a229)
+Upstream-Status: Pending
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_emit.c | 40 +++++++++++++++++++
+ 1 file changed, 40 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
+index 8b866887818..54bb9a456cf 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
+@@ -456,6 +456,46 @@ fd2_emit_restore(struct fd_context *ctx, struct fd_ringbuffer *ring)
+    OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
+    OUT_RING(ring, 0x00000000);
+ 
++   /*
++    * Aggressive cache flush + invalidate at batch start (A22X only).
++    *
++    * gl-capture pixel-diff experiments isolated cross-process GPU-side
++    * nondeterminism: 10 consecutive runs of the *same* deterministic
++    * test program emit byte-identical PM4 cmdstreams (FD_RD_DUMP
++    * confirmed - md5 of all rd files is identical) but produce
++    * different pixel output. Mesa is doing its job; the hardware is
++    * producing different output for the same input across runs.
++    *
++    * The remaining sources of run-to-run variance for byte-identical
++    * cmdstreams are GPU-internal caches/SRAMs that retain data from a
++    * previous submit (potentially across processes / DRM clients):
++    *   - VPC vertex parameter cache (drained via VS_FETCH_DONE event)
++    *   - Texture/L2 caches (TC_CNTL_STATUS L2_INVALIDATE - already
++    *     present below)
++    *   - SQ instruction & shader-constant caches (CACHE_FLUSH_AND_INV
++    *     event flushes both)
++    *   - General "wait for everything to settle" between submits
++    *     (SC_WAIT_WC for write-coalesce drain)
++    *
++    * Issue the strongest A22X-available flush sequence here, before
++    * any state-restore writes, so each batch starts from a clean GPU
++    * state regardless of what previous submits or clients left
++    * behind. Cheap once-per-batch.
++    */
++   if (!is_a20x(ctx->screen)) {
++      OUT_PKT3(ring, CP_EVENT_WRITE, 1);
++      OUT_RING(ring, CACHE_FLUSH_AND_INV_EVENT);
++
++      OUT_PKT3(ring, CP_EVENT_WRITE, 1);
++      OUT_RING(ring, VS_FETCH_DONE);
++
++      OUT_PKT3(ring, CP_EVENT_WRITE, 1);
++      OUT_RING(ring, SC_WAIT_WC);
++
++      OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
++      OUT_RING(ring, 0x00000000);
++   }
++
+    if (is_a20x(ctx->screen)) {
+       OUT_PKT0(ring, REG_A2XX_RB_BC_CONTROL, 1);
+       OUT_RING(ring, A2XX_RB_BC_CONTROL_ACCUM_TIMEOUT_SELECT(3) |
+-- 
+2.43.0
+

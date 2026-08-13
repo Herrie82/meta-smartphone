@@ -1,0 +1,146 @@
+# A22X (Adreno 220 / HP TouchPad) freedreno patch series — clean.
+#
+# Replaces the experimental "minimal + cycle-engineering" bbappend (now
+# mesa_%.bbappend.pre-a22x-vsc-fix). All falsified period-8 experiments
+# were dropped; the old patch files are kept under files/archive/ for
+# reference.
+#
+# The period-8 cold-start cycle is fixed KERNEL-side (mmcc-msm8660 GFX3D core
+# reset on power-on); these Mesa patches are the GMEM/VSC correctness fixes plus
+# the cache/state-coherency patches needed to keep CONTINUOUS rendering stable
+# (without them, long runs accumulate stale GPU cache/state and lock up).
+#
+#   0001  is_a22x() helper for Adreno 220/225
+#   0002  fix non-fast-clear color on A22X (write to PS CONST[0])
+#   0003  cache flush+invalidate at batch start (A22X)
+#   0004  configure the A220 hardware VSC tile-binner
+#   0005  enable HW fast-clear on A22X (GMEM background clear)
+#   0006  set CLIP_DISABLE during GMEM operations
+#   0007  add GMEM synchronization for A22X
+#   0008  invalidate L2 texture cache at every batch start  <-- textures + stale-data
+#   0009  WAIT_FOR_IDLE at start of fd2_emit_restore
+#   0010  aggressive cache flush+invalidate at batch start  <-- continuous-render stability
+#
+# NO per-draw warmup: the period-8 cold-start cycle is gone (kernel fix), so the
+# ghost-draw priming is not needed; runs at full FPS.
+#
+# 0008-0010 restore the batch-start cache-coherency that was carried on the
+# experimental a2xx-patches branch but dropped during curation. The kernel
+# gpummu_unmap invalidates the MMU TLB but NOT the GPU's L2 texture cache, so
+# without 0008 the GPU samples stale texels (faceted/garbage texture scenes);
+# 0009+0010 drain the pipeline and flush+invalidate caches at each batch start
+# so stale state can't accumulate across submits and wedge the GPU on long runs.
+#
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+
+PACKAGECONFIG:append = " freedreno"
+
+SRC_URI:append = " \
+    file://0001-freedreno-add-is_a22x-helper-for-Adreno-220-225.patch \
+    file://0002-freedreno-a2xx-fix-non-fast-clear-color-on-A22X-writ.patch \
+    file://0003-freedreno-a2xx-cache-flush-invalidate-at-batch-start.patch \
+    file://0004-freedreno-a2xx-configure-the-A220-hardware-VSC-tile-.patch \
+    file://0005-freedreno-a2xx-enable-HW-fast-clear-on-A22X-to-fix-G.patch \
+    file://0006-freedreno-a2xx-set-CLIP_DISABLE-during-GMEM-operatio.patch \
+    file://0007-freedreno-a2xx-add-GMEM-synchronization-for-A22X.patch \
+    file://0011-freedreno-a2xx-keep-perfmon-enabled-so-kernel-devfre.patch \
+    file://0013-freedreno-a2xx-cap-VSC-pipe-width-at-2-bins-on-A22X.patch \
+    file://0014-freedreno-a2xx-keep-A22X-bin-grid-coverable-by-H-1-V.patch \
+    file://0029-freedreno-drm-msm-don-t-fence-wait-in-FD_RD_DUMP-ful.patch \
+    file://0034-freedreno-a2xx-emit-RB_DEPTH_INFO-in-sysmem-prep.patch \
+    file://0035-freedreno-a2xx-skip-HW-fast-clear-under-FD_DBG-SYSME.patch \
+    file://0036-freedreno-a2xx-A22X-cache-flush-use-KGSL-pattern-per.patch \
+    file://0037-freedreno-a2xx-A22X-per-tile-drain-use-KGSL-pattern.patch \
+    file://0038-freedreno-A22X-auto-route-deadlock-prone-batches.patch \
+"
+
+# BISECT 2026-05-30: 0038 (auto-route heuristic) dropped to test if it's the
+# cause of surface-manager boot-time hangchecks.
+#    file://0038-freedreno-A22X-auto-route-deadlock-prone-batches.patch
+
+# 2026-05-30 patch series cleanup:
+#   Tier-3 debug-only DROPPED (dev-probes nobody runs in production):
+#     0012 debug-dump emitted A22X VSC grid
+#     0022 add fd2_emit_cycprobe() CYCLECTR perfcounter helper
+#     0023 place CYCLECTR probes around per-tile work
+#     0024 fix CYCLECTR probe slot-0 collision + add WFI
+#     0025 CYCLECTR use global tile index, not tile->n
+#   Cache-flush series CONSOLIDATED 0016+0018+0020+0032+0033 -> 0036+0037:
+#     0016 use CACHE_FLUSH_TS + WFI per draw on A22X (init, replaced by 0033)
+#     0018 move A22X cache-flush drain from per-draw to per-tile (init, modified by 0032)
+#     0020 skip per-draw cache flush on A22X (KGSL diff)
+#     0032 A22X per-tile drain use legacy KGSL pattern
+#     0033 A22X per-draw KGSL-pattern back-pressure
+#     The chain net effect was: a22x per-draw + per-tile use KGSL pattern
+#     (CACHE_FLUSH + WAIT_REG_EQ(0x39b bit24)). The scratch_buf/seqno code
+#     0016 added became unused after 0033. Consolidated into two clean patches
+#     against pristine upstream.
+
+# 0031 DROPPED 2026-05-29 after validation: bounded submission FALSIFIED as the
+# fix for desktop:blur w=4 hang. Sweep of FD_BOUNDED_TILES={1,2,4,8,16} shows:
+#   bound>=4: identical hang storm as baseline (4 hangchecks in 30s, FPS:1)
+#   bound<=2: fewer hangchecks but throughput too low to render meaningfully
+# AND introduces rendering corruption on at least one scene (Linaro image
+# black-top -- per-batch-init state likely not re-emitted on sub-submit start:
+# scissor/viewport/depth/etc). Hypothesis "aggregate submit too large genuinely
+# wedges CP" is wrong; the GPU hangs at the SAME cumulative work regardless of
+# submit-boundary placement. The real deadlock is in freedreno's per-tile emit
+# sequence vs KGSL's, not the submit size. Patch preserved on disk.
+#    file://0031-freedreno-bounded-tiles-per-submit-env-gated-FD_BOUN.patch
+#
+
+# file://0030-freedreno-a2xx-emit-CP_SET_SHADER_BASES-per-program-.patch
+# file://0027-freedreno-a2xx-init-bool-and-loop-shader-constant-me.patch
+# file://0028-freedreno-a2xx-extend-constant-memory-zeroing-to-all.patch
+
+# 0026 (CACHE_FLUSH_TS | TIMESTAMP) DISABLED 2026-05-28: the TIMESTAMP flag
+# (0x40000000 in the EVENT dword) is not recognized by a2xx PKT3 CP_EVENT_WRITE.
+# Emitting it wedges the GPU/CP (device became unreachable on first test).
+# The flag was added in later adreno generations. Keep the patch on disk for
+# reference but do not apply.
+#    file://0026-freedreno-a2xx-cycprobe-to-GPU-timestamps-via-CACHE_.patch
+
+# 0019 RETESTED 2026-05-28 AFTER kernel KGSL-style boost (99049d909a36): same
+# conclusion as the original test (DROPPED). L2 invalidate gives binner_test
+# heavy a small +3% boost but doesn't help desktop:blur w=4 (3381->3326ms,
+# only +1.6%) and REGRESSES desktop:shadow w=4 by -23% (13->10 fps). The L2
+# cache miss is NOT the desktop:blur bottleneck even under fixed DVFS. Real
+# bottleneck likely per-tile WFI drains (0016, needed for correctness) and/or
+# memory bandwidth for ping-pong FBO traffic.
+
+
+# 0010 (aggressive flush) and 0019 (L2 TC invalidate) tested 2026-05-28: both
+# DROPPED. Neither fixed the desktop:blur FPS 1 issue. 0010 has measured
+# regressions in full glmark2 run: shadow 21->16 (-24%), bump-height 53->29
+# (-45%), build use-vbo=false 19->39 (+105%) — net loss. 0019 slightly slowed
+# shadow with no benefit. Patches preserved on disk; the blur gap (5.5x vs
+# legacy KGSL on same A220) is freedreno-side state-emit bloat, not cache.
+#    file://0010-freedreno-a2xx-aggressive-cache-flush-invalidate-at-.patch
+#    file://0019-freedreno-a2xx-invalidate-L2-texture-cache-at-every-.patch
+
+# 0017 (wait for GPU idle between tiles on A22X) is DISABLED: validated
+# 2026-05-27 that it does NOT reduce the glmark2 -b desktop hangcheck-recover
+# rate (~20/30s on the 16-bin/batch_restore=20 path) and adds a per-tile
+# GPU-idle wait (slower). The glmark2 residual is a clock-independent GPU
+# back-end stall (pinning 266MHz made it WORSE: FPS 1), needing cmdstream-level
+# tracing, not tile-sync. Patch/commit preserved.
+#    file://0017-freedreno-a2xx-wait-for-GPU-idle-between-tiles-on-A2.patch
+
+# 0015 (memexport HW binning on A22X) is DISABLED: validated 2026-05-27 that
+# it HARD-HANGS the GPU on real multi-bin scenes (10-bin 1024px FBO + the live
+# compositor desktop). The a22x memexport visibility pass produces wrong/empty
+# visibility that locks the CP (rptr stuck at 0). Plain tiling + 0016 renders
+# the same 10-bin scene cleanly, so binning stays out until the visibility pass
+# is correct. Patch/commit preserved for future work.
+#    file://0015-freedreno-a2xx-enable-memexport-HW-binning-pass-on-A.patch
+
+# 0011: keep the RBBM perfmon enabled every batch (stock freedreno emitted
+# CP_PERFMON_CNTL=0 unless FD_MESA_DEBUG=perfc). The a2xx kernel devfreq
+# driver reads the RBBM busy perfcounter for GPU load; without this the
+# counter stays frozen, devfreq sees ~0 load and pins the GPU at its minimum
+# OPP (27 MHz). Pairs with the kernel a2xx perfmon-clock enable + NRT_BUSY
+# select + idle-gated DVFS clock switch.
+
+#    file://0008-freedreno-a2xx-invalidate-L2-texture-cache-at-every-.patch
+#    file://0009-freedreno-a2xx-WAIT_FOR_IDLE-at-start-of-fd2_emit_re.patch
+#    file://0010-freedreno-a2xx-aggressive-cache-flush-invalidate-at-.patch

@@ -1,0 +1,74 @@
+From 5820ad4f2ed8930397f2b37e0cf1c1c54cdb54d3 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Wed, 13 May 2026 15:31:23 +0200
+Subject: [PATCH] freedreno: A22X per-draw DEALLOC bisect (Gemini round 5)
+
+Round-4 falsified end-of-tile-loop DEALLOC: emitting VS_DEALLOC
+(0x00) + PS_DEALLOC (0x01) AFTER all per-tile work has no effect
+on the 0x0ee2 cycle-counter advance rate.
+
+Gemini round-5 hypothesis: the slot allocator is bound tightly to
+each draw and needs immediate deallocation after the draw, not
+deferred to end of submit.
+
+This emits the deallocation pair after EVERY CP_DRAW_INDX (in the
+shared fd_draw() helper, gated on is_a22x screen + env var).
+Per-render flow (Mesa A22X):
+  1. binning CP_DRAW_INDX
+  2. -> emit VS_DEALLOC + PS_DEALLOC (NEW)
+  3. user CP_DRAW_INDX
+  4. -> emit VS_DEALLOC + PS_DEALLOC (NEW)
+  5. resolve RECTLIST CP_DRAW_INDX
+  6. -> emit VS_DEALLOC + PS_DEALLOC (NEW)
+  N. ... per tile
+
+Default (no FD2_PER_DRAW_DEALLOC env) = byte-identical to prior.
+
+Test: FD2_PER_DRAW_DEALLOC=1 FD2_FLUSH_MULTIPLIER=1 cap-binary
+Read 0x0ee2 via debugfs.  Expected outcomes:
+  a) Cycle PINS at boot value (0x15000002): per-draw deallocation
+     model confirmed.  Make unconditional in follow-up.
+  b) Cycle unchanged: the slot tracking is independent of draw
+     proximity too.  Confirms architectural difference between
+     Mesa and vendor cmdstreams.
+  c) Hang: per-draw event emission unsafe in this position.
+
+Upstream-Status: Pending
+
+Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
+---
+ src/gallium/drivers/freedreno/freedreno_draw.h | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/freedreno_draw.h b/src/gallium/drivers/freedreno/freedreno_draw.h
+index 3f2bcba1560..fc2295e9d65 100644
+--- a/src/gallium/drivers/freedreno/freedreno_draw.h
++++ b/src/gallium/drivers/freedreno/freedreno_draw.h
+@@ -103,6 +103,24 @@ fd_draw(struct fd_batch *batch, struct fd_ringbuffer *ring,
+ 
+    emit_marker(ring, 7);
+ 
++   /* A22X per-draw DEALLOC bisect (FD2_PER_DRAW_DEALLOC=1).
++    *
++    * Round-4 falsified end-of-tile-loop DEALLOC events as
++    * cycle-fixers.  Gemini round-5 hypothesis: events need to be
++    * emitted RIGHT AFTER each CP_DRAW_INDX, not deferred to end of
++    * batch.  Tests whether slot deallocation is tied to draw
++    * proximity.
++    *
++    * Emits VS_DEALLOC (0x00) + PS_DEALLOC (0x01) after every draw.
++    * Gated on is_a22x screen.
++    */
++   if (is_a22x(batch->ctx->screen) && getenv("FD2_PER_DRAW_DEALLOC")) {
++      OUT_PKT3(ring, CP_EVENT_WRITE, 1);
++      OUT_RING(ring, 0x00);  /* VS_DEALLOC */
++      OUT_PKT3(ring, CP_EVENT_WRITE, 1);
++      OUT_RING(ring, 0x01);  /* PS_DEALLOC */
++   }
++
+    fd_reset_wfi(batch);
+ }
+ 
+-- 
+2.43.0
+

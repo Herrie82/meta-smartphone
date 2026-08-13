@@ -1,0 +1,127 @@
+From b5e791e2dc4cf972156d6a4fe4333ac76c51c4f7 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Wed, 13 May 2026 14:49:12 +0200
+Subject: [PATCH] freedreno/a2xx: three env-gated bisects for 0x0ee2
+ cycle-counter advance source
+
+Per-render advance of register 0x0ee2 by +0x00020200 is invariant
+against all end-of-tile-loop event emission tests (CONTEXT_DONE,
+FACENESS_FLUSH, VS/PS_DEALLOC N=0..8).  The advance must come from
+packets emitted EARLIER in the submit.  Three bisects to identify
+the source:
+
+  FD2_NO_CACHE_FLUSH_INV=1
+      Skip BOTH existing CACHE_FLUSH_AND_INV_EVENT (0x16) emissions
+      in fd2_emit.c (batch start) and fd2_gmem.c (per-tile
+      renderprep).  If 0x0ee2 stops advancing -> event 0x16 IS the
+      advancer.
+
+  FD2_START_NOP_COUNT=N
+      Emit N extra CP_NOP packets at start of submit (in
+      fd2_emit_restore).  Tests whether per-packet count drives
+      advance vs per-specific-opcode.  Mesa already emits ~30 packets
+      per render of various types - if NOPs advance the counter,
+      we've identified per-packet driver.
+
+  FD2_END_CACHE_FLUSH_INV_COUNT=N
+      Emit N additional CACHE_FLUSH_AND_INV_EVENT (0x16) at end of
+      tile loop (in fd2_emit_tile_fini).  Tests additive vs
+      saturated.  If 0x16 is the advancer and adds +0x00020200 per
+      emission, then N=14 should pin (1 user + 1 per-tile renderprep
+      + 14 here = 16 -> wrap mod-16 to phase 0).
+
+Default (no env vars) = byte-identical to prior behaviour.
+
+Run after fresh boot:
+  FD2_NO_CACHE_FLUSH_INV=1 FD2_FLUSH_MULTIPLIER=1 cap-binary
+  FD2_START_NOP_COUNT=14 FD2_FLUSH_MULTIPLIER=1 cap-binary
+  FD2_END_CACHE_FLUSH_INV_COUNT=14 FD2_FLUSH_MULTIPLIER=1 cap-binary
+
+Read 0x0ee2 via /sys/kernel/debug/dri/0/regrw_value to check
+whether advance is stopped / pinned / unchanged.
+
+Upstream-Status: Pending
+
+Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_emit.c | 22 ++++++++++++++++++-
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 19 +++++++++++++++-
+ 2 files changed, 39 insertions(+), 2 deletions(-)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
+index 31f45ce3567..667ac127ad8 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_emit.c
+@@ -427,10 +427,30 @@ fd2_emit_restore(struct fd_context *ctx, struct fd_ringbuffer *ring)
+     * Same event is already used in fd2_draw.c with count=1, so
+     * this is the proven-safe form for A22X.
+     */
+-   if (!is_a20x(ctx->screen)) {
++   /* Test toggles for 0x0ee2 cycle-counter advance bisect (2026-05-13):
++    *   FD2_NO_CACHE_FLUSH_INV=1   skip this CACHE_FLUSH_AND_INV_EVENT
++    *                              (and the per-tile one in fd2_gmem.c).
++    *                              Tests whether event 0x16 is what
++    *                              advances 0x0ee2 by +0x00020200/render.
++    *   FD2_START_NOP_COUNT=N      emit N extra CP_NOP packets here at
++    *                              start of submit.  Tests whether the
++    *                              advance is per-packet rather than
++    *                              per-specific-opcode.
++    */
++   if (!is_a20x(ctx->screen) && !getenv("FD2_NO_CACHE_FLUSH_INV")) {
+       OUT_PKT3(ring, CP_EVENT_WRITE, 1);
+       OUT_RING(ring, CACHE_FLUSH_AND_INV_EVENT);
+    }
++   {
++      const char *nop_env = getenv("FD2_START_NOP_COUNT");
++      if (nop_env) {
++         int n = atoi(nop_env);
++         for (int i = 0; i < n; i++) {
++            OUT_PKT3(ring, CP_NOP, 0);
++            OUT_RING(ring, 0x00000000);
++         }
++      }
++   }
+ 
+    if (is_a20x(ctx->screen)) {
+       OUT_PKT0(ring, REG_A2XX_RB_BC_CONTROL, 1);
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+index 3647885dbe3..283b383d4f7 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -418,8 +418,10 @@ fd2_emit_tile_mem2gmem(struct fd_batch *batch,
+ 
+    /* A22X: Cache flush after mem2gmem draws as per blob driver behavior.
+     * This ensures texture data written to GMEM is coherent before rendering.
++    *
++    * Gated on FD2_NO_CACHE_FLUSH_INV for the 0x0ee2 cycle-counter bisect.
+     */
+-   if (!is_a20x(ctx->screen)) {
++   if (!is_a20x(ctx->screen) && !getenv("FD2_NO_CACHE_FLUSH_INV")) {
+       OUT_PKT3(ring, CP_EVENT_WRITE, 1);
+       OUT_RING(ring, CACHE_FLUSH_AND_INV_EVENT);
+    }
+@@ -640,6 +642,21 @@ fd2_emit_tile_fini(struct fd_batch *batch) assert_dt
+          OUT_RING(ring, 0x01);  /* PS_DEALLOC */
+       }
+    }
++
++   /* FD2_END_CACHE_FLUSH_INV_COUNT=N: emit N extra
++    * CACHE_FLUSH_AND_INV_EVENT at end of tile loop.
++    * Tests whether 0x16 itself is what advances 0x0ee2 by
++    * +0x00020200/render.  If yes, emitting 14 here should wrap
++    * the counter mod-16 and pin the cycle.
++    */
++   const char *cfi_env = getenv("FD2_END_CACHE_FLUSH_INV_COUNT");
++   if (cfi_env) {
++      int n = atoi(cfi_env);
++      for (int i = 0; i < n; i++) {
++         OUT_PKT3(ring, CP_EVENT_WRITE, 1);
++         OUT_RING(ring, 0x16);  /* CACHE_FLUSH_AND_INV_EVENT */
++      }
++   }
+ }
+ 
+ /* before first tile */
+-- 
+2.43.0
+

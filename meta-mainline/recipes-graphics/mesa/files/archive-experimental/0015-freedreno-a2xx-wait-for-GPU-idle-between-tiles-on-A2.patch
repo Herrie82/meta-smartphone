@@ -1,0 +1,64 @@
+From d168c9a699187bf26aedf77877187c5c7fcc01e3 Mon Sep 17 00:00:00 2001
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Wed, 27 May 2026 12:08:53 +0200
+Subject: [PATCH] freedreno/a2xx: wait for GPU idle between tiles on A22X
+
+With the a220 hardware binner enabled (W<=2/H=1 VSC config matching the
+legacy KGSL capture), heavy scenes still wedge: hangcheck reports a "gpu
+lockup" with the completed fence still slowly advancing, i.e. the 3D
+back-end is stuck busy, not a hard hang.  This is the per-tile race the
+force-sysmem investigation noted: fd2_emit_tile_renderprep reprograms
+RB_COLOR_INFO, the window offset/scissor and VGT_CURRENT_BIN_ID for the
+next tile while the previous tile's draws and gmem2mem resolve are still
+in flight -- there is no sync between tiles.
+
+A plain OUT_WFI is known to be insufficient on A22X (see the pre-draw
+VGT-DMA RBBM_STATUS poll workaround in fd2_draw.c), so reuse that same
+CP_WAIT_REG_EQ RBBM_STATUS poll at the start of each tile's renderprep,
+waiting for GUI_ACTIVE (bit 31) to clear so the previous tile has fully
+drained before reprogramming.  Idle RBBM_STATUS reads 0x110; busy reads
+0xc40103xx.
+
+Upstream-Status: Pending [hardware workaround]
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+---
+ src/gallium/drivers/freedreno/a2xx/fd2_gmem.c | 22 +++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+index 03a967684c6..62c702c797d 100644
+--- a/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
++++ b/src/gallium/drivers/freedreno/a2xx/fd2_gmem.c
+@@ -811,6 +811,28 @@ fd2_emit_tile_renderprep(struct fd_batch *batch,
+    struct pipe_framebuffer_state *pfb = &batch->framebuffer;
+    enum pipe_format format = pipe_surface_format(&pfb->cbufs[0]);
+ 
++   /* A22X: the hardware tile-binner is always active, and the per-tile
++    * state reprogramming below (RB_COLOR_INFO, window offset/scissor,
++    * VGT_CURRENT_BIN_ID, ...) races the previous tile's still-in-flight
++    * draw + gmem2mem-resolve pipeline -- there is no implicit sync between
++    * tiles.  On heavy scenes that race leaves the 3D back-end stuck busy
++    * (hangcheck "gpu lockup" with the fence still creeping), which the
++    * VSC pipe-config (W<=2/H=1, matching KGSL) alone does not fix.
++    *
++    * Wait for the GPU to go idle before reprogramming for this tile.  A
++    * plain OUT_WFI is not sufficient on A22X (see the pre-draw VGT-DMA
++    * workaround in fd2_draw.c), so reuse the same RBBM_STATUS register
++    * poll, here waiting for GUI_ACTIVE (bit 31) to clear -- i.e. the
++    * previous tile's draws and resolve have fully drained.  (Idle
++    * RBBM_STATUS reads 0x110; busy reads 0xc40103xx.) */
++   if (is_a22x(ctx->screen)) {
++      OUT_PKT3(ring, CP_WAIT_REG_EQ, 4);
++      OUT_RING(ring, 0x000005d0); /* RBBM_STATUS */
++      OUT_RING(ring, 0x00000000); /* reference value: idle */
++      OUT_RING(ring, 0x80000000); /* mask: GUI_ACTIVE */
++      OUT_RING(ring, 0x00000001); /* poll interval */
++   }
++
+    OUT_PKT3(ring, CP_SET_CONSTANT, 2);
+    OUT_RING(ring, CP_REG(REG_A2XX_RB_COLOR_INFO));
+    OUT_RING(ring, A2XX_RB_COLOR_INFO_SWAP(fmt2swap(format)) |
+-- 
+2.43.0
+
