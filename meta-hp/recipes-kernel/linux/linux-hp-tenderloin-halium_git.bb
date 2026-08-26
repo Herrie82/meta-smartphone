@@ -65,3 +65,7 @@ do_install:append() {
 # package. That is build metadata inside debug sources, not anything the kernel
 # ships; silencing it beats patching the kernel's generators to prefix-map argv.
 INSANE_SKIP:${PN}-src += "buildpaths"
+
+# Kept here, not taken from kernel_android.bbclass: this recipe does not inherit
+# that class. See the class for why the host C standard has to be pinned.
+BUILD_CFLAGS:append = " -std=gnu17"

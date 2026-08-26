@@ -174,3 +174,20 @@ python android_bootimg_deploy() {
                 os.remove(dst)
             os.symlink(os.path.basename(target), dst)
 }
+
+# Pin the host C standard for the kernel's own build tools.
+#
+# scripts/unifdef.c declares "static bool constexpr;" and assigns to it. C23
+# made constexpr a keyword, and a current host GCC (15.x) defaults to -std=gnu23,
+# so every kernel here predating the upstream rename in 6.7 fails to build its
+# host tools:
+#
+#   scripts/unifdef.c:206:1: error: 'constexpr' in empty declaration
+#
+# Only the host tools are affected - the kernel itself uses OE's cross toolchain
+# - and kernel.bbclass passes HOSTCFLAGS="${BUILD_CFLAGS}", so pinning it here is
+# enough. This lives in the class rather than in each recipe because it is a
+# property of the vintage of these trees, not of any one device: it had already
+# been pasted into three recipes by hand, and every one of the sixteen kernels
+# inheriting this class hits it the moment someone builds it on a modern host.
+BUILD_CFLAGS:append = " -std=gnu17"
