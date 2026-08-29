@@ -94,13 +94,29 @@ svcs=$(
         for f in "$d"/*.rc "$d"/hw/*.rc; do
             [ -f "$f" ] || continue
             awk -v classes="$CLASSES" '
-                /^service /            { svc = $2; next }
+                # class_start skips services declared "disabled": those run
+                # only when something starts them by name - a property
+                # trigger, an exec chain, or the framework. Starting them
+                # anyway is not a bigger safety net, it is a bug: qcrild3 is
+                # disabled because the third SIM slot needs a triple-SIM
+                # modem, and force-starting it had init respawning a crashing
+                # RIL nine times a second. The rc grammar puts "disabled"
+                # anywhere in the service block, before or after "class", so
+                # collect the whole block and decide when it ends.
+                function flush() {
+                    if (svc != "" && wanted && !disabled) print svc
+                    svc = ""; wanted = 0; disabled = 0
+                }
+                /^service /  { flush(); svc = $2; next }
+                /^on /       { flush(); next }
                 /^[[:space:]]*class /  {
                     if (svc == "") next
                     for (i = 2; i <= NF; i++)
-                        if (index(" " classes " ", " " $i " ")) { print svc; break }
-                    svc = ""
+                        if (index(" " classes " ", " " $i " ")) { wanted = 1; break }
+                    next
                 }
+                /^[[:space:]]*disabled[[:space:]]*$/ { disabled = 1; next }
+                END { flush() }
             ' "$f"
         done
     done | sort -u
