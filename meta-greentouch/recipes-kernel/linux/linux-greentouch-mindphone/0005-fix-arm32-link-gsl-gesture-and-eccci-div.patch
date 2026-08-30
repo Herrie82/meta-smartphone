@@ -1,0 +1,41 @@
+From: LuneOS port <webos-ports@webos-ports.org>
+Subject: [PATCH] fix arm32 link: gslX680 gesture and eccci 64-bit division
+
+gslX680: the tree only ships the no_gesture point-id algorithm, so
+GSL_GESTURE references an undefined gsl_obtain_gesture(); disable the
+gesture-wake path. eccci: one u64 division lacked the do_div guard the
+neighbouring branch already has, pulling in __aeabi_uldivmod on arm32.
+
+Upstream-Status: Inappropriate [vendor driver, no upstream]
+---
+diff --git a/drivers/input/touchscreen/mediatek/gslX680/mt6739/mtk_gslX680.c b/drivers/input/touchscreen/mediatek/gslX680/mt6739/mtk_gslX680.c
+index 879989ee84fd..e28d48fbebed 100755
+--- a/drivers/input/touchscreen/mediatek/gslX680/mt6739/mtk_gslX680.c
++++ b/drivers/input/touchscreen/mediatek/gslX680/mt6739/mtk_gslX680.c
+@@ -102,7 +102,9 @@ enum check_err {
+ /* #define HIGH_SPEED_I2C */
+ 
+ 
+-#define GSL_GESTURE
++/* The shipped point-id object is the no_gesture variant; it has no
++ * gsl_obtain_gesture(), so gesture wake cannot be linked in. */
++/* #define GSL_GESTURE */
+ 
+ #ifdef GSL_GESTURE
+ static int gsl_gesture_flag = 1;
+diff --git a/drivers/misc/mediatek/eccci/hif/net_speed_monitor.c b/drivers/misc/mediatek/eccci/hif/net_speed_monitor.c
+index 76267b9097ef..77c088ced0bd 100644
+--- a/drivers/misc/mediatek/eccci/hif/net_speed_monitor.c
++++ b/drivers/misc/mediatek/eccci/hif/net_speed_monitor.c
+@@ -270,7 +270,11 @@ static int get_speed_str(u64 speed, char buf[], int size)
+ 		rem = do_div(speed, 1000);
+ 		ret = snprintf(buf, size, "%llu.%03lluGbps", speed, rem);
+ 	} else if (speed >= 1000000LL) {
++#ifdef __LP64__
+ 		speed = speed / 1000LL;
++#else
++		do_div(speed, 1000LL);
++#endif
+ 		rem = do_div(speed, 1000);
+ 		ret = snprintf(buf, size, "%llu.%03lluMbps", speed, rem);
+ 	} else if (speed >= 1000LL) {

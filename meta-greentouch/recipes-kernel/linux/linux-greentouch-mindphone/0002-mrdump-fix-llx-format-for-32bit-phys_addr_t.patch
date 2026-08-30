@@ -1,0 +1,24 @@
+From: LuneOS port <webos-ports@webos-ports.org>
+Subject: [PATCH] mrdump: fix %llx format for 32-bit phys_addr_t
+
+On arm32 without LPAE phys_addr_t is 32-bit, and gcc under
+-Werror=format rejects printing it with %llx. Cast explicitly.
+
+Upstream-Status: Inappropriate [vendor driver, no upstream]
+---
+diff --git a/drivers/misc/mediatek/aee/mrdump/mrdump_panic.c b/drivers/misc/mediatek/aee/mrdump/mrdump_panic.c
+index 1769cd6a9984..ac2218cd9aae 100644
+--- a/drivers/misc/mediatek/aee/mrdump/mrdump_panic.c
++++ b/drivers/misc/mediatek/aee/mrdump/mrdump_panic.c
+@@ -250,8 +250,9 @@ static __init int mrdump_parse_chosen(void)
+ 			mrdump_sram_cb.start_addr = reg[0];
+ 			mrdump_sram_cb.size = reg[1];
+ 			pr_notice("%s: mrdump_cbaddr=%llx, mrdump_cbsize=%llx\n",
+-				  __func__, mrdump_sram_cb.start_addr,
+-				  mrdump_sram_cb.size);
++				  __func__,
++				  (unsigned long long)mrdump_sram_cb.start_addr,
++				  (unsigned long long)mrdump_sram_cb.size);
+ 		}
+ 
+ 		if (of_property_read_string(node, "mrdump,lk", &lkver) == 0) {

@@ -1,0 +1,21 @@
+From: LuneOS port <webos-ports@webos-ports.org>
+Subject: [PATCH] gslX680: build the Silead point-id algorithm object again
+
+mtk_gslX680.c references gsl_alg_id_main/gsl_mask_tiaoping/
+gsl_obtain_gesture, which live in the (GPL-licensed C) point-id file
+whose obj-y line was commented out — vmlinux fails to link with
+CONFIG_TOUCHSCREEN_MTK_GSLX680=y, and stock enables it.
+
+Upstream-Status: Inappropriate [vendor driver, no upstream]
+---
+diff --git a/drivers/input/touchscreen/mediatek/gslX680/mt6739/Makefile b/drivers/input/touchscreen/mediatek/gslX680/mt6739/Makefile
+index 25df9ba8b157..10134b078518 100755
+--- a/drivers/input/touchscreen/mediatek/gslX680/mt6739/Makefile
++++ b/drivers/input/touchscreen/mediatek/gslX680/mt6739/Makefile
+@@ -3,5 +3,5 @@
+ ccflags-y += -I$(srctree)/drivers/input/touchscreen/mediatek/
+ ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat/
+ 
+-# obj-y   +=  gsl_point_id_point_active_pen_no_gesture.o
++obj-y   +=  gsl_point_id_point_active_pen_no_gesture.o
+ obj-y	+=  mtk_gslX680.o
