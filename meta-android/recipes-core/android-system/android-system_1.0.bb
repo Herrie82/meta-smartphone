@@ -2,7 +2,7 @@ DESCRIPTION = "System configuration and startup scripts for the Android compatib
 LICENSE = "GPL-3.0-only"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/GPL-3.0-only;md5=c79ff39f19dfec6d293b95dea7b07891"
 
-PR = "r4"
+PR = "r5"
 
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
@@ -58,6 +58,8 @@ SRC_URI = " \
     file://10-boot-marker \
     file://30-mount-nothing \
     file://40-rootfs-rw \
+    file://55-vintf-no-software-keymaster \
+    file://60-camerahalserver-eager \
 "
 
 # Create additional android users we need (need to have same UIDs as in android)
@@ -196,6 +198,8 @@ do_install() {
     install -m 0755 ${UNPACKDIR}/10-boot-marker ${D}${localstatedir}/lib/lxc/android/pre-start.d/
     install -m 0755 ${UNPACKDIR}/30-mount-nothing ${D}${localstatedir}/lib/lxc/android/pre-start.d/
     install -m 0755 ${UNPACKDIR}/40-rootfs-rw ${D}${localstatedir}/lib/lxc/android/pre-start.d/
+    install -m 0755 ${UNPACKDIR}/55-vintf-no-software-keymaster ${D}${localstatedir}/lib/lxc/android/pre-start.d/
+    install -m 0755 ${UNPACKDIR}/60-camerahalserver-eager ${D}${localstatedir}/lib/lxc/android/pre-start.d/
 
     install -d ${D}${localstatedir}/lib/lxc/android/rootfs
 
