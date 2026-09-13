@@ -28,7 +28,7 @@ inherit kernel_android pkgconfig
 S = "${UNPACKDIR}/${BP}"
 
 SRC_URI = "git://github.com/shr-distribution/linux.git;branch=sargo/${LINUX_VERSION}/lune;protocol=https"
-SRCREV = "7e1f047b7fed39f5dbea8ad2733317be3f5af7f6"
+SRCREV = "26adbc7b3dbef3613e187d14b2cac6985dcf0235"
 
 LINUX_VERSION = "4.9.124"
 PV = "${LINUX_VERSION}+git"
