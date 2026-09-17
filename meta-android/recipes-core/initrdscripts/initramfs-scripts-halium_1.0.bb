@@ -15,6 +15,7 @@ SRC_URI += " \
   file://0001-halium-find-the-Android-image-instead-of-assuming-whe.patch \
   file://0002-halium-size-userdata-from-sysfs-not-proc-partitions.patch \
   file://functions \
+  file://pkvm-modprobe \
 "
 
 SRCREV = "0a2275aafe651d19e9eb3aa7a801c4d28550298f"
@@ -26,6 +27,11 @@ do_install:append() {
 
     install -m 0644 ${S}/scripts/halium ${D}/halium-boot.sh
     install -m 0644 ${UNPACKDIR}/functions ${D}/functions
+    # The kernel execs /system/bin/modprobe itself, before /init, to load the
+    # pKVM early modules named in kvm-arm.protected_modules (arch/arm64/kvm/pkvm.c).
+    # Stock Android's generic ramdisk provides toybox there; ours had nothing.
+    install -d ${D}/system/bin
+    install -m 0755 ${UNPACKDIR}/pkvm-modprobe ${D}/system/bin/modprobe
 }
 
 FILES:${PN} += " \
