@@ -1,0 +1,55 @@
+--- a/include/linux/sched.h	2026-09-16 17:46:47.109840771 -0400
++++ b/include/linux/sched.h	2026-09-16 17:46:55.832275708 -0400
+@@ -1096,10 +1096,11 @@
+ 
+ 	struct nameidata		*nameidata;
+ 
+-#ifdef CONFIG_SYSVIPC
+-	struct sysv_sem			sysvsem;
+-	struct sysv_shm			sysvshm;
+-#endif
++	/*
++	 * LuneOS: sysvsem/sysvshm (CONFIG_SYSVIPC) would normally live here.
++	 * Inserting them mid-struct shifts every following member and breaks
++	 * the frozen KMI, so they are parked in ANDROID_KABI_USE(6..8) below.
++	 */
+ #ifdef CONFIG_DETECT_HUNG_TASK
+ 	unsigned long			last_switch_count;
+ 	unsigned long			last_switch_time;
+@@ -1553,9 +1554,19 @@
+ 	ANDROID_KABI_RESERVE(3);
+ 	ANDROID_KABI_RESERVE(4);
+ 	ANDROID_KABI_RESERVE(5);
+-	ANDROID_KABI_RESERVE(6);
+-	ANDROID_KABI_RESERVE(7);
+-	ANDROID_KABI_RESERVE(8);
++	/*
++	 * LuneOS: SysV IPC in reserved padding. genksyms still sees the
++	 * reserved u64s, so CRCs and offsets match the SYSVIPC=n KMI.
++	 * sysv_sem is one pointer (one slot), sysv_shm a list_head (two).
++	 */
++#ifdef CONFIG_ANDROID_KABI_RESERVE
++	ANDROID_KABI_USE(6, struct sysv_sem sysvsem);
++	_ANDROID_KABI_REPLACE(_ANDROID_KABI_RESERVE(7); _ANDROID_KABI_RESERVE(8),
++			      struct sysv_shm sysvshm);
++#else
++	struct sysv_sem			sysvsem;
++	struct sysv_shm			sysvshm;
++#endif
+ 
+ 	/*
+ 	 * New fields for task_struct should be added above here, so that
+@@ -1574,6 +1585,13 @@
+ 	 */
+ };
+ 
++#if defined(CONFIG_SYSVIPC) && defined(CONFIG_ANDROID_KABI_RESERVE)
++static_assert(sizeof(struct sysv_sem) == sizeof(u64),
++	      "sysv_sem must occupy exactly one ANDROID_KABI reserved slot");
++static_assert(sizeof(struct sysv_shm) == 2 * sizeof(u64),
++	      "sysv_shm must occupy exactly two ANDROID_KABI reserved slots");
++#endif
++
+ static inline struct pid *task_pid(struct task_struct *task)
+ {
+ 	return task->thread_pid;
