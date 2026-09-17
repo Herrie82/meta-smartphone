@@ -44,6 +44,7 @@ SRC_URI = "\
     git://android.googlesource.com/kernel/common;protocol=https;nobranch=1;name=kernel \
     ${@(d.getVar('GKI_CLANG_URI') + ';name=clang;subdir=clang') if d.getVar('GKI_CLANG_URI') else ''} \
     file://luneos_defconfig \
+    file://sysvipc-kmi-preserve.patch \
 "
 # nobranch=1: ACK release tags point at commits that are NOT reachable from the
 # android14-6.1 branch tip (verified - `git branch -r --contains` is empty for
