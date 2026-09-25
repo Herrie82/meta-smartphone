@@ -1,0 +1,7 @@
+# avahi joins the mDNS group on wlan0, so every mDNS packet on the LAN wakes
+# the phone from suspend (about half of all WLAN wakes measured on athena).
+# Only cupsd and the IPP tools use it here.
+disable avahi-daemon.service
+disable avahi-daemon.socket
+enable athena-kbd-backlight.service
+enable athena-kbd-scroll.service
