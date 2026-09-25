@@ -124,6 +124,12 @@ static void inj_touch(int x, int y)
 		emit(EV_ABS, ABS_MT_TRACKING_ID, INJ_ID);
 		emit(EV_ABS, ABS_MT_TOUCH_MAJOR, 8);
 		emit(EV_ABS, ABS_MT_PRESSURE, 60);
+		/* The kernel drops a value equal to the slot's last one, and a
+		 * compositor started since then never saw it (it takes 0): a
+		 * touch-down at the previous touch-down's spot would land at the
+		 * top-left. Step off the value first so both always get through. */
+		emit(EV_ABS, ABS_MT_POSITION_X, x + 1);
+		emit(EV_ABS, ABS_MT_POSITION_Y, y + 1);
 	}
 	emit(EV_ABS, ABS_MT_POSITION_X, x);
 	emit(EV_ABS, ABS_MT_POSITION_Y, y);
