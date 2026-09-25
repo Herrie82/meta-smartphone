@@ -1,0 +1,58 @@
+From 5fded82fc4d4e1cf4e65a1064c88fff5ea8371eb Mon Sep 17 00:00:00 2001
+From: Alan Morford <alanmorford@gmail.com>
+Date: Fri, 25 Sep 2026 07:37:16 +0200
+Subject: [PATCH] keys: read each input node after what the previous ones
+ delivered
+
+read_input_event() polls every keypad node and reads each one that is
+readable into the same buffer - always at pEvents[0] - while adding its
+event count to the total. When two nodes have input pending at once, the
+second read overwrites the first node's events and the tail of the buffer
+is stale.
+
+The power key is the first node on athena (qpnp_pon). On a resume the
+press routinely arrives together with events from another node, so the
+press was overwritten and luna-displaymanager never saw it: the power
+button "often does nothing" and a volume press sometimes "wakes" the
+phone instead (the latched events come through on the next read).
+
+Read into pEvents + numEvents with the remaining capacity, and stop when
+the buffer is full (the rest is read on the next round).
+
+Reproduced on athena by injecting a power press/release on event0 and
+four MSC_SCAN/SYN events on event2 in the same instant, display off:
+before 1 of 3 presses lost, after 6 of 6 turned the display on.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/keys/keys_common.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/src/keys/keys_common.c b/src/keys/keys_common.c
+index 03635b3..470a534 100644
+--- a/src/keys/keys_common.c
++++ b/src/keys/keys_common.c
+@@ -543,9 +543,19 @@ int read_input_event(InputEvent_t* pEvents, int maxEvents)
+         if (fds[n].revents & POLLIN) 
+         {
+             /* keep looping if get EINTR */
++            if (numEvents >= maxEvents)
++                break;	/* buffer full: the rest waits for the next round */
++
+             for (;;) 
+             {
+-                rd = read(fds[n].fd, pEvents, sizeof(InputEvent_t) * maxEvents);
++                /* Read after what earlier descriptors already delivered. Reading
++                 * every descriptor into pEvents[0] let a second device with
++                 * pending input overwrite the first one's events while the count
++                 * still included both - on resume the power key (qpnp_pon, the
++                 * first node) was routinely overwritten by other keys/switches
++                 * and the press was lost: "the power button often does nothing". */
++                rd = read(fds[n].fd, pEvents + numEvents,
++                          sizeof(InputEvent_t) * (maxEvents - numEvents));
+ 
+                 if (rd > 0) 
+                 {
+-- 
+2.34.1
+
