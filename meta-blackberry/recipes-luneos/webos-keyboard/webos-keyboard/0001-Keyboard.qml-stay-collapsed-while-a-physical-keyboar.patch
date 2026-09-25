@@ -1,0 +1,73 @@
+From 642b3817f1934cfae983d5b33e15522d5dccbb53 Mon Sep 17 00:00:00 2001
+From: Alan Morford <alanmorford@gmail.com>
+Date: Fri, 25 Sep 2026 07:37:16 +0200
+Subject: [PATCH 1/2] Keyboard.qml: stay collapsed while a physical keyboard is
+ in use
+
+With a hwkeyboard profile present (maliit_hw_keyboard.present) the
+on-screen keyboard covered every focused field for no benefit: keep the
+canvas hidden and report an empty visible rect, so the application is
+not resized either. Physical keys still go through the plugin.
+
+symActive re-opens it on the symbols page. With stock plugin code that is
+the Sym level latch; on athena the device layer makes Sym a toggle
+instead (BlackBerry behaviour). objectName carries "athena-sym-visible"
+while the symbols are really shown, so that toggle can follow what is on
+screen rather than a flag that goes stale when the panel is closed some
+other way.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ qml/Keyboard.qml | 22 +++++++++++++++++++++-
+ 1 file changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/qml/Keyboard.qml b/qml/Keyboard.qml
+index bdeacf1..31ce601 100644
+--- a/qml/Keyboard.qml
++++ b/qml/Keyboard.qml
+@@ -42,6 +42,22 @@ Item {
+     property variant input_method: maliit_input_method
+     property variant event_handler: maliit_event_handler
+ 
++    // A physical keyboard (the KEY2's, via a hwkeyboard profile) replaces the
++    // on-screen one: keep it collapsed, and report no area so the focused
++    // application is not resized under the user. The Sym key re-opens it on
++    // the symbols page. On athena, libathena-symkey.so (preloaded into
++    // MaliitServer) turns symActive into "Sym toggled the symbol panel";
++    // without it symActive is the plain Sym level latch.
++    property bool symbolPanel: maliit_hw_keyboard.present && maliit_hw_keyboard.symActive
++    property bool hwSuppress: maliit_hw_keyboard.present && !symbolPanel
++    onHwSuppressChanged: reportKeyboardVisibleRect();
++    onSymbolPanelChanged: UI.currentSymbolState = symbolPanel ? "SYMBOLS" : "CHARACTERS";
++    // Tell libathena-symkey.so whether the symbols are really on screen, so
++    // Sym toggles what the user sees even if the panel was closed some other
++    // way (the keyboard swiped away) while the field kept focus.
++    property bool symbolsVisible: symbolPanel && maliit_geometry.shown === true
++    onSymbolsVisibleChanged: maliit_hw_keyboard.objectName = symbolsVisible ? "athena-sym-visible" : ""
++
+     Item {
+         id: canvas
+ 
+@@ -52,7 +68,7 @@ Item {
+         height: keyboardSurface.height
+         property int keypadHeight: height;
+ 
+-        visible: true
++        visible: !fullScreenItem.hwSuppress
+ 
+         property int contentOrientation: maliit_geometry.orientation
+         onContentOrientationChanged: fullScreenItem.reportKeyboardVisibleRect();
+@@ -212,6 +228,10 @@ Item {
+     // calculates the size of the visible keyboard to report to the window system
+     // FIXME get the correct size for enabled extended keys instead of that big area
+     function reportKeyboardVisibleRect() {
++        if (hwSuppress) {
++            maliit_geometry.visibleRect = Qt.rect(0, 0, 0, 0);
++            return;
++        }
+ 
+         var vx = 0;
+         var vy = wordRibbon.y;
+-- 
+2.34.1
+
