@@ -1,0 +1,16 @@
+[Unit]
+Description=KEY2 keyboard backlight following the ambient light sensor
+Documentation=file:///usr/bin/athena-kbd-backlight
+ConditionPathExists=/sys/class/leds/keyboard-backlight/brightness
+After=luna-displaymanager.service ls-hubd.service
+Wants=luna-displaymanager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/athena-kbd-backlight
+ExecStopPost=/usr/bin/athena-kbd-backlight off
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
