@@ -16,7 +16,10 @@
  *
  *   athena-kbd-scroll [kbd-touch-dev] [keys-dev] [screen-dev] [arrow-dev]
  * Sideways slides drag sideways (launcher tabs, carousels), each slide locked
- * to the axis it started on.
+ * to the axis it started on - except in a text field (MaliitServer's shim
+ * keeps /run/athena-text-focus up to date), where a right-to-left slide
+ * deletes the word before the cursor: Alt+Backspace on the keyboard device,
+ * the same word delete as the physical keys.
  * Tunables (environment): KBDSCROLL_SCALE (screen px per pad unit, 3.0),
  * KBDSCROLL_SCALE_X (the same for sideways slides, 1.5),
  * KBDSCROLL_SLOP (pad units before a slide counts, 55),
@@ -50,6 +53,39 @@ static int step_x = 40, step_y = 95, debug;
 #define DRIVE_SLOP 25
 #define dbg(...) do { if (debug) fprintf(stderr, __VA_ARGS__); } while (0)
 static int arrow_fd = -1;
+static int keys_wfd = -1;
+static long long own_keys_until;	/* our own Alt+Backspace, echoed back */
+
+static long long now_ms(void);
+
+static int text_focus(void)
+{
+	char b[4] = "";
+	int fd = open("/run/athena-text-focus", O_RDONLY);
+	if (fd < 0)
+		return 0;
+	if (read(fd, b, sizeof b - 1) < 0) { b[0] = 0; }
+	close(fd);
+	return b[0] == '1';
+}
+
+static void key_event(int code, int value)
+{
+	struct input_event e[2];
+	memset(e, 0, sizeof e);
+	e[0].type = EV_KEY; e[0].code = code; e[0].value = value;
+	e[1].type = EV_SYN;
+	if (keys_wfd >= 0 && write(keys_wfd, e, sizeof e) < 0) { /* ignore */ }
+}
+
+static void delete_word(void)
+{
+	own_keys_until = now_ms() + 150;
+	key_event(KEY_LEFTALT, 1);
+	key_event(KEY_BACKSPACE, 1);
+	key_event(KEY_BACKSPACE, 0);
+	key_event(KEY_LEFTALT, 0);
+}
 
 static void arrow(int code)
 {
@@ -153,6 +189,7 @@ int main(int argc, char **argv)
 
 	pad_fd = open(pad_dev, O_RDONLY | O_NONBLOCK);
 	key_fd = open(key_dev, O_RDONLY | O_NONBLOCK);
+	keys_wfd = open(key_dev, O_WRONLY);
 	scr_fd = open(scr_dev, O_WRONLY);
 	if (pad_fd < 0 || key_fd < 0 || scr_fd < 0) {
 		perror("open");
@@ -160,7 +197,7 @@ int main(int argc, char **argv)
 	}
 	if (ioctl(scr_fd, EVIOCGABS(ABS_MT_POSITION_X), &ai) == 0) scr_w = ai.maximum + 1;
 	if (ioctl(scr_fd, EVIOCGABS(ABS_MT_POSITION_Y), &ai) == 0) scr_h = ai.maximum + 1;
-	for (int i = 0; i < SLOTS; i++) { id[i] = -1; fresh[i] = 0; sx[i] = sy[i] = 0; }
+	for (int i = 0; i < SLOTS; i++) { id[i] = -1; fresh[i] = 0; sx[i] = sy[i] = x[i] = y[i] = 0; }
 	fprintf(stderr, "athena-kbd-scroll: pad %s keys %s screen %s (%dx%d) arrows %s%s scale %.2f slop %d\n",
 		pad_dev, key_dev, scr_dev, scr_w, scr_h, arrow_dev, arrow_fd < 0 ? " (unavailable)" : "", scale, slop);
 
@@ -173,6 +210,8 @@ int main(int argc, char **argv)
 		if (pf[1].revents & POLLIN) {
 			struct input_event e;
 			while (read(key_fd, &e, sizeof e) == sizeof e) {
+				if (now_ms() < own_keys_until)
+					continue;	/* our own word delete coming back */
 				if (e.type == EV_KEY && (e.code == KEY_LEFTALT || e.code == KEY_RIGHTALT)) {
 					if (e.value != 2)
 						alt_down = e.value;
@@ -275,12 +314,18 @@ int main(int argc, char **argv)
 				x0 = x[first];
 				y0 = y[first];
 				rejected = (now_ms() - last_key < typing_ms) || !display_on();
+				dbg("touch at %d,%d%s\n", x0, y0, !rejected ? "" :
+				    now_ms() - last_key < typing_ms ? ": ignored, a key was just pressed" : ": ignored, display off");
 			}
 			continue;
 		}
 
 		/* finger lifted, or a second one arrived: the gesture is over */
 		if (active == 0 || id[t_slot] < 0 || active > 1) {
+			if (active > 1 && !rejected)
+				dbg("second contact: gesture cancelled\n");
+			else if (active == 0)
+				dbg("lifted%s\n", scrolling ? "" : rejected ? " (was ignored)" : " before moving past the slop");
 			inj_up();
 			tracking = scrolling = 0;
 			if (active > 1) rejected = 1;
@@ -296,8 +341,18 @@ int main(int argc, char **argv)
 				continue;
 			/* lock the slide to the axis it started on */
 			scroll_axis = abs(dx) > abs(dy) ? 'x' : 'y';
+			if (scroll_axis == 'x' && dx < 0 && text_focus()) {
+				dbg("slide left in a text field: delete word\n");
+				delete_word();
+				rejected = 1;	/* one word per slide */
+				continue;
+			}
+			dbg("slide %s\n", scroll_axis == 'x' ? (dx < 0 ? "left" : "right") : (dy < 0 ? "up" : "down"));
 			scrolling = 1;
-			anchor_x = scr_w / 2;
+			/* A sideways drag starts on the side it moves away from, so it
+			 * has most of the screen to travel: the launcher only changes
+			 * tab on a slow drag once it has covered half the width. */
+			anchor_x = scroll_axis == 'x' ? (dx < 0 ? scr_w - scr_w / 10 : scr_w / 10) : scr_w / 2;
 			anchor_y = scr_h / 2;
 			pad_anchor = scroll_axis == 'x' ? x[t_slot] : y[t_slot];
 			inj_touch(anchor_x, anchor_y);
@@ -306,13 +361,12 @@ int main(int argc, char **argv)
 
 		if (scroll_axis == 'x') {
 			/* sideways: the launcher's tabs, horizontal lists */
+			/* Hold at the screen edge rather than lifting and taking hold
+			 * again: a second touch would stop the tab change the first one
+			 * started. */
 			int sx = anchor_x + (int)((x[t_slot] - pad_anchor) * scale_x);
-			if (sx < scr_w / 10 || sx > scr_w - scr_w / 10) {
-				inj_up();
-				pad_anchor = x[t_slot];
-				inj_touch(anchor_x, anchor_y);
-				continue;
-			}
+			if (sx < scr_w / 20) sx = scr_w / 20;
+			if (sx > scr_w - scr_w / 20) sx = scr_w - scr_w / 20;
 			inj_touch(sx, anchor_y);
 			continue;
 		}

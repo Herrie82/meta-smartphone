@@ -488,3 +488,29 @@ void _ZN14MaliitKeyboard18AbstractTextEditor13onKeyReleasedERKNS_3KeyE(void *sel
 	drop_keys = false;
 	word_mode = false;
 }
+
+/* Tell athena-kbd-scroll whether a text field has focus: in one, a
+ * right-to-left slide over the keys deletes the word before the cursor
+ * instead of dragging the screen sideways. */
+#include <fcntl.h>
+#include <unistd.h>
+
+#define TEXT_FOCUS_FLAG "/run/athena-text-focus"
+
+typedef void (*focus_fn)(void *, bool);
+
+void _ZN11InputMethod17handleFocusChangeEb(void *self, bool focus_in)
+{
+	static focus_fn real;
+
+	if (!real)
+		real = (focus_fn)original("_ZN11InputMethod17handleFocusChangeEb");
+	if (real)
+		real(self, focus_in);
+
+	int fd = open(TEXT_FOCUS_FLAG, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd >= 0) {
+		if (write(fd, focus_in ? "1\n" : "0\n", 2) < 0) { /* ignore */ }
+		close(fd);
+	}
+}
