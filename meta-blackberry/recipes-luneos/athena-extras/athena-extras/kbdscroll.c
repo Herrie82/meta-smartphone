@@ -16,8 +16,8 @@
  *
  *   athena-kbd-scroll [kbd-touch-dev] [keys-dev] [screen-dev] [arrow-dev]
  * Sideways slides drag sideways (launcher tabs, carousels), each slide locked
- * to the axis it started on - except in a text field (MaliitServer's shim
- * keeps /run/athena-text-focus up to date), where a right-to-left slide
+ * to the axis it started on - except in a text field (see text_focus()),
+ * where a right-to-left slide
  * deletes the word before the cursor: Alt+Backspace on the keyboard device,
  * the same word delete as the physical keys.
  * Tunables (environment): KBDSCROLL_SCALE (screen px per pad unit, 3.0),
@@ -58,15 +58,23 @@ static long long own_keys_until;	/* our own Alt+Backspace, echoed back */
 
 static long long now_ms(void);
 
+/* Whether a text field has focus: the keyboard plugin writes "1" or "0" to
+ * /run/maliit-text-focus (webos-keyboard#105). Older plugins do not, and there
+ * the MaliitServer shim writes /run/athena-text-focus instead. */
 static int text_focus(void)
 {
+	static const char *const flags[] = {"/run/maliit-text-focus", "/run/athena-text-focus"};
 	char b[4] = "";
-	int fd = open("/run/athena-text-focus", O_RDONLY);
-	if (fd < 0)
-		return 0;
-	if (read(fd, b, sizeof b - 1) < 0) { b[0] = 0; }
-	close(fd);
-	return b[0] == '1';
+
+	for (unsigned i = 0; i < sizeof flags / sizeof flags[0]; i++) {
+		int fd = open(flags[i], O_RDONLY);
+		if (fd < 0)
+			continue;
+		if (read(fd, b, sizeof b - 1) < 0) { b[0] = 0; }
+		close(fd);
+		return b[0] == '1';
+	}
+	return 0;
 }
 
 static void key_event(int code, int value)

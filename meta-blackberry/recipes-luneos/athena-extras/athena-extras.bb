@@ -1,8 +1,8 @@
 SUMMARY = "BlackBerry KEY2 (athena) hardware integration for LuneOS"
-DESCRIPTION = "Keyboard backlight following the ambient light sensor, scrolling \
-and cursor movement from the capacitive keyboard, BlackBerry-style Sym / Shift / \
-Alt behaviour and auto-capitalisation for the physical keyboard, a glib pidfd \
-workaround for appinstalld on the 4.19 kernel, and a power-key wake report."
+DESCRIPTION = "Keyboard backlight following the ambient light sensor, scrolling, \
+cursor movement and word delete from the capacitive keyboard, the Sym key opening \
+the on-screen symbols, a glib pidfd workaround for appinstalld on the 4.19 kernel, \
+and a power-key wake report."
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 

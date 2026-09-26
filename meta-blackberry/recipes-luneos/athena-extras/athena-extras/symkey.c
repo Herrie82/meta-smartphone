@@ -16,12 +16,12 @@
  *
  * levelChanged() is emitted on every flag change so the QML binding updates.
  *
- * Auto-capitalisation for the physical keyboard: the plugin's own auto-caps
- * only shifts the on-screen keyboard, and its "empty field" check runs at
- * focus-in, before a web page has reported its text. Hardware letters are
- * capitalised from HardwareKeyboard::shiftLatchActive(), so answer yes there
- * whenever auto-caps is enabled for the field (setAutoCapsEnabled) and the
- * text before the cursor is empty, starts a new line, or ends a sentence.
+ * Also: a lone "i" becomes "I", and Alt is taken off the arrow keys that
+ * athena-kbd-scroll sends for Alt + a slide over the keys.
+ *
+ * Auto-capitalisation of hardware letters, Alt+Backspace word delete and the
+ * text-field focus flag (/run/maliit-text-focus) are done by the plugin itself
+ * since webos-keyboard#105, which took them over from this shim.
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -34,9 +34,6 @@
 #define RESULT_TEXT 2
 
 static void fix_lone_i(void);
-static bool delete_word(int keep);
-static bool word_mode, word_repeated;
-static bool alt_active(const void *hwkbd);
 static bool is_word_end(void *qstring);
 
 typedef int (*handle_key_fn)(void *, int, unsigned, int, void *);
@@ -128,12 +125,6 @@ int _ZN14MaliitKeyboard16HardwareKeyboard9handleKeyEN6QEvent4TypeEj6QFlagsIN2Qt1
 	if (!real)
 		return 0;	/* NotHandled: the key goes to the application as is */
 
-	/* Alt + Backspace deletes words: mark it, and let the key go through
-	 * as usual - the editor hooks below turn it into a word backspace, so
-	 * holding it repeats word by word on the editor's own timer. */
-	if (scancode == 14 + 8 && type == QEVENT_KEYPRESS)
-		word_mode = alt_active(self);
-
 	int r = real(self, type, scancode, modifiers, text);
 	if (r == RESULT_TEXT && type == QEVENT_KEYPRESS && text && is_word_end(text))
 		fix_lone_i();		/* an Alt-level , . ? ! ' ends it too */
@@ -157,18 +148,13 @@ void _ZN14MaliitKeyboard16HardwareKeyboard5resetEv(void *self)
 	set_panel(self, false);
 }
 
-/* Web text fields reach Maliit without an auto-capitalisation hint, so the
- * host answers "no" and the plugin never arms auto-caps. When the host says
- * no, turn it on anyway for plain free-text fields - never for password
- * (hidden) fields, or for number, phone, e-mail or URL fields. */
-#include <stdio.h>
-
+/* The input method host and whether auto-caps is on for the field (the
+ * editor's final say, including the user setting): "i" -> "I" follows it, as
+ * the plugin's own auto-capitalisation does. Both are only observed. */
 #define MAPLUGINS "libmaliit-plugins.so.0"
-enum { CONTENT_FREE_TEXT = 0 };
 
 static void *host;		/* MInputMethodHost, seen in autoCapitalizationEnabled */
 typedef bool (*host_bool_fn)(void *, bool *);
-typedef int (*host_int_fn)(void *, bool *);
 
 static void *maliit_sym(const char *name)
 {
@@ -182,35 +168,13 @@ static void *maliit_sym(const char *name)
 
 bool _ZN16MInputMethodHost25autoCapitalizationEnabledERb(void *self, bool *valid)
 {
-	static host_bool_fn real, hidden;
-	static host_int_fn content;
-	bool v;
-	bool r;
+	static host_bool_fn real;
 
-	if (!real) {
+	if (!real)
 		real = (host_bool_fn)maliit_sym("_ZN16MInputMethodHost25autoCapitalizationEnabledERb");
-		hidden = (host_bool_fn)maliit_sym("_ZN16MInputMethodHost10hiddenTextERb");
-		content = (host_int_fn)maliit_sym("_ZN16MInputMethodHost11contentTypeERb");
-	}
 	host = self;
-	r = real ? real(self, valid) : false;
-	if (r)
-		return true;
-	v = false;
-	if (hidden && hidden(self, &v) && v)
-		return false;
-	v = false;
-	if (content) {
-		int ct = content(self, &v);
-		if (v && ct != CONTENT_FREE_TEXT)
-			return false;
-	}
-	fprintf(stderr, "athena-symkey: host gave no auto-caps hint; enabling for a free-text field\n");
-	*valid = true;
-	return true;
+	return real ? real(self, valid) : false;
 }
-
-/* --- auto-caps for hardware letters -------------------------------------- */
 
 static bool autocaps_enabled;	/* the editor's final say, incl. the user setting */
 
@@ -231,54 +195,6 @@ void _ZN14MaliitKeyboard18AbstractTextEditor18setAutoCapsEnabledEb(void *self, b
 struct qstring { int *d; unsigned short *ptr; long long size; };
 typedef bool (*surr_fn)(void *, struct qstring *, int *);
 typedef void (*dealloc_fn)(void *, long long, long long);
-
-static bool sentence_start(void)
-{
-	static surr_fn surrounding;
-	static dealloc_fn dealloc;
-	struct qstring q = {0, 0, 0};
-	int pos = -1;
-	bool cap = false;
-
-	if (!host)
-		return false;
-	if (!surrounding) {
-		surrounding = (surr_fn)maliit_sym("_ZN16MInputMethodHost15surroundingTextER7QStringRi");
-		dealloc = (dealloc_fn)dlsym(RTLD_DEFAULT, "_ZN10QArrayData10deallocateEPS_xx");
-	}
-	if (surrounding && surrounding(host, &q, &pos) && pos >= 0 && pos <= q.size) {
-		int i = pos - 1;
-		bool space = false, newline = false;
-
-		while (i >= 0 && (q.ptr[i] == ' ' || q.ptr[i] == '\t' || q.ptr[i] == '\n' ||
-				  q.ptr[i] == '\r' || q.ptr[i] == 0xa0)) {
-			if (q.ptr[i] == '\n' || q.ptr[i] == '\r')
-				newline = true;
-			space = true;
-			i--;
-		}
-		if (i < 0 || newline)
-			cap = true;
-		else if (space && (q.ptr[i] == '.' || q.ptr[i] == '!' || q.ptr[i] == '?'))
-			cap = true;
-	}
-	if (q.d && __atomic_sub_fetch(q.d, 1, __ATOMIC_ACQ_REL) == 0 && dealloc)
-		dealloc(q.d, 2, 8);
-	return cap;
-}
-
-typedef bool (*const_bool_fn)(const void *);
-
-bool _ZNK14MaliitKeyboard16HardwareKeyboard16shiftLatchActiveEv(const void *self)
-{
-	static const_bool_fn real;
-
-	if (!real)
-		real = (const_bool_fn)original("_ZNK14MaliitKeyboard16HardwareKeyboard16shiftLatchActiveEv");
-	if (real && real(self))
-		return true;
-	return autocaps_enabled && sentence_start();
-}
 
 /* --- "i" -> "I" ------------------------------------------------------------ */
 
@@ -368,149 +284,4 @@ void _ZN20MAbstractInputMethod15processKeyEventEN6QEvent4TypeEN2Qt3KeyE6QFlagsIN
 	}
 	if (real)
 		real(self, type, key, modifiers, text, autorepeat, count, scancode, native_modifiers, time);
-}
-
-/* --- Alt + Backspace: delete a word --------------------------------------- */
-
-static bool alt_active(const void *hwkbd)
-{
-	static const_bool_fn is_alt;
-
-	if (!is_alt)
-		is_alt = (const_bool_fn)original("_ZNK14MaliitKeyboard16HardwareKeyboard11isAltActiveEv");
-	return is_alt && is_alt(hwkbd);
-}
-
-static bool is_space16(unsigned short c)
-{
-	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0xa0;
-}
-
-/* Deletes back to the start of the previous word - any spaces before the
- * cursor, then the run of non-space characters before them - except the
- * first `keep` characters, which the editor's own backspace then removes. */
-static bool delete_word(int keep)
-{
-	static surr_fn surrounding;
-	static commit_fn commit;
-	struct qstring q = {0, 0, 0}, empty = {0, 0, 0};
-	int pos = -1, n = 0;
-
-	if (!host)
-		return false;
-	if (!surrounding) {
-		surrounding = (surr_fn)maliit_sym("_ZN16MInputMethodHost15surroundingTextER7QStringRi");
-		commit = (commit_fn)maliit_sym("_ZN16MInputMethodHost16sendCommitStringERK7QStringiii");
-	}
-	if (!surrounding || !commit)
-		return false;
-	if (!surrounding(host, &q, &pos) || pos < 0 || pos > q.size) {
-		qstring_release(&q);
-		return false;
-	}
-	int i = pos;
-	while (i > 0 && is_space16(q.ptr[i - 1])) i--;
-	while (i > 0 && !is_space16(q.ptr[i - 1])) i--;
-	n = pos - i - keep;
-	qstring_release(&q);
-	if (n > 0)
-		commit(host, &empty, -n, n, -1);
-	return true;
-}
-
-/* Alt + Backspace, held or tapped.
- *
- * The editor's own backspace sends a Backspace key event back to the
- * application; with Alt physically held that arrives as Alt+Backspace, which
- * applications ignore - so the editor's repeat ticked but deleted nothing.
- * Its repeat timer is still the right rhythm, so keep it: each tick deletes a
- * word here, by text replacement, and a tap deletes one on release. While the
- * editor's backspace code runs from these hooks, the key events it sends are
- * dropped (MInputMethodHost::sendKeyEvent), so nothing is deleted twice in an
- * application that does understand Alt+Backspace. */
-typedef void (*editor_key_fn)(void *, const void *);
-typedef void (*send_key_fn)(void *, const void *, int);
-static bool drop_keys;
-
-void _ZN16MInputMethodHost12sendKeyEventERK9QKeyEventN6Maliit16EventRequestTypeE(void *self, const void *ev, int req)
-{
-	static send_key_fn real;
-
-	if (!real)
-		real = (send_key_fn)maliit_sym("_ZN16MInputMethodHost12sendKeyEventERK9QKeyEventN6Maliit16EventRequestTypeE");
-	if (drop_keys)
-		return;
-	if (real)
-		real(self, ev, req);
-}
-
-void _ZN14MaliitKeyboard18AbstractTextEditor12onKeyPressedERKNS_3KeyE(void *self, const void *key)
-{
-	static editor_key_fn real;
-
-	if (!real)
-		real = (editor_key_fn)original("_ZN14MaliitKeyboard18AbstractTextEditor12onKeyPressedERKNS_3KeyE");
-	if (word_mode)
-		word_repeated = false;
-	if (real)
-		real(self, key);
-}
-
-void _ZN14MaliitKeyboard18AbstractTextEditor19autoRepeatBackspaceEv(void *self)
-{
-	static void_fn real;
-
-	if (!real)
-		real = (void_fn)original("_ZN14MaliitKeyboard18AbstractTextEditor19autoRepeatBackspaceEv");
-	if (word_mode) {
-		word_repeated = true;
-		delete_word(0);
-		drop_keys = true;	/* the editor's own delete, and its timer restart */
-	}
-	if (real)
-		real(self);
-	drop_keys = false;
-}
-
-void _ZN14MaliitKeyboard18AbstractTextEditor13onKeyReleasedERKNS_3KeyE(void *self, const void *key)
-{
-	static editor_key_fn real;
-
-	if (!real)
-		real = (editor_key_fn)original("_ZN14MaliitKeyboard18AbstractTextEditor13onKeyReleasedERKNS_3KeyE");
-	if (word_mode) {
-		if (!word_repeated)
-			delete_word(0);	/* a tap */
-		drop_keys = true;
-	}
-	if (real)
-		real(self, key);
-	drop_keys = false;
-	word_mode = false;
-}
-
-/* Tell athena-kbd-scroll whether a text field has focus: in one, a
- * right-to-left slide over the keys deletes the word before the cursor
- * instead of dragging the screen sideways. */
-#include <fcntl.h>
-#include <unistd.h>
-
-#define TEXT_FOCUS_FLAG "/run/athena-text-focus"
-
-typedef void (*focus_fn)(void *, bool);
-
-void _ZN11InputMethod17handleFocusChangeEb(void *self, bool focus_in)
-{
-	static focus_fn real;
-
-	if (!real)
-		real = (focus_fn)original("_ZN11InputMethod17handleFocusChangeEb");
-	if (real)
-		real(self, focus_in);
-
-	int fd = open(TEXT_FOCUS_FLAG, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-	if (fd >= 0) {
-		if (write(fd, focus_in ? "1\n" : "0\n", 2) < 0) { /* ignore */ }
-		close(fd);
-	}
 }
