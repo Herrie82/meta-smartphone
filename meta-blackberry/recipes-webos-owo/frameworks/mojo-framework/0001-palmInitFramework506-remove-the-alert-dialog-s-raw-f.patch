@@ -1,0 +1,35 @@
+From e57635cb86369c56ab89a821cee601a3e8c81606 Mon Sep 17 00:00:00 2001
+From: Alan Morford <alanmorford@gmail.com>
+Date: Fri, 25 Sep 2026 07:37:35 +0200
+Subject: [PATCH 1/3] palmInitFramework506: remove the alert dialog's raw focus
+ listener on cleanup
+
+_AlertDialog's setup adds handleRefocus both with controller.listen() and
+with a raw addEventListener(); cleanup only stops the first. After any
+alert has closed, the leftover DOMFocusIn handler blurs every field in
+the scene the moment it gets focus - text fields cannot be typed into
+(SimpleChat after its updater alert). Confirmed with getEventListeners():
+0 before the alert, 1 left behind after it closed; 0 with this change.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ mojo/builtins/palmInitFramework506.js | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/mojo/builtins/palmInitFramework506.js b/mojo/builtins/palmInitFramework506.js
+index 348c173..9f4dbdb 100644
+--- a/mojo/builtins/palmInitFramework506.js
++++ b/mojo/builtins/palmInitFramework506.js
+@@ -27874,6 +27874,9 @@ Mojo.Animation.Dialog.animateDialogOpen(this.box,this.scrim);
+ 
+ cleanup:function(){
+ this.controller.stopListening(this.controller.scene.sceneElement,'DOMFocusIn',this.handleRefocus);
++// LuneOS: setup also adds handleRefocus with a raw addEventListener; left
++// behind, it blurs every field in the scene after the alert has closed.
++this.controller.scene.sceneElement.removeEventListener('DOMFocusIn',this.handleRefocus);
+ this.controller.stopListening(this.itemsParent,Mojo.Event.tap,this._tapHandler);
+ this.controller.stopListening(this.controller.element,Mojo.Event.dragStart,this._dragHandler);
+ },
+-- 
+2.34.1
+

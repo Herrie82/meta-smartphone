@@ -1,0 +1,2 @@
+enable athena-kbd-backlight.service
+enable athena-kbd-scroll.service

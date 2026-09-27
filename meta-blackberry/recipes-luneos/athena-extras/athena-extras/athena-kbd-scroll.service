@@ -1,0 +1,16 @@
+[Unit]
+Description=KEY2 keyboard touch surface scrolls the screen
+Documentation=file:///usr/bin/athena-kbd-scroll
+ConditionPathExists=/dev/input/event1
+After=surface-manager.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/athena-kbd-scroll
+# The input devices are found by name; their event numbers are not fixed.
+ExecStart=/bin/sh -c 'dev() { for d in /sys/class/input/event*; do case "$$(cat $$d/device/name)" in $$1) echo /dev/input/$${d##*/}; return;; esac; done; }; exec /usr/bin/athena-kbd-scroll "$$(dev touch_keypad)" "$$(dev "stmpe_*keypad")" "$$(dev synaptics_dsx_2)" "$$(dev nav_key)"'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

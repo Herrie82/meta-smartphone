@@ -1,0 +1,619 @@
+From 8c344baf5b483c58df15a3a3e023a690e4612af8 Mon Sep 17 00:00:00 2001
+From: Alan Morford <alanmorford@gmail.com>
+Date: Fri, 25 Sep 2026 07:37:35 +0200
+Subject: [PATCH 3/3] mojo-compat: touch scrolling, file:// cookies, IME key
+ events, caret taps, file picker, uploads
+
+- Touch drags -> mouse drags: Mojo's Scroller and gestures run on mouse
+  events, but Chromium sends only touch events for a drag. Past an 8 px
+  slop the drag is replayed as mousedown/mousemove/mouseup; taps are left
+  alone. [data-mojocompat-native-scroll] containers are exempt.
+- document.cookie on file://: Chromium drops cookies for file:// pages,
+  and Mojo.Model.Cookie is how Mojo apps keep preferences. Where a probe
+  cookie does not stick, back it with localStorage, keyed per app dir.
+- IME text arrives as composition/input with keyCode 229 and no
+  keypress, so TextField never hid its hint text: send the keypress /
+  Delete keyup it expects after each input event.
+- Mojo cancels every mousedown, which in Chromium is what places the
+  caret: let the browser have the default for text fields.
+- Mojo.FilePicker: the cross-app picker scene (com.palm.mojo-systemui)
+  does not exist; draw a picker in the calling stage instead. It lists
+  through org.webosports.service.filemanager/GetDirectories (the app needs
+  filemanager-service.operation), shows image thumbnails through a
+  /usr/palm/frameworks/mojo/media-internal -> /media/internal symlink
+  (web apps may not read file:// outside app/framework dirs), and cancels
+  on the back gesture (Escape).
+- downloadmanager/upload: LunaDownloadMgr drops customHttpHeaders (checked
+  against a local listener), so uploads that authenticate by header fail.
+  For /media/internal files with headers, upload from the page instead,
+  replying in the download manager's shape.
+
+This file must stay pure ASCII: it is served without a charset.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ mojo/mojo-compat.js | 566 +++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 565 insertions(+), 1 deletion(-)
+
+diff --git a/mojo/mojo-compat.js b/mojo/mojo-compat.js
+index 553074c..f9c08b9 100644
+--- a/mojo/mojo-compat.js
++++ b/mojo/mojo-compat.js
+@@ -505,9 +505,573 @@
+ 		define("simulated", false);
+ 	}
+ 
++
++	/*
++	 * Touch drags -> mouse drags
++	 * --------------------------
++	 * Mojo's gesture layer and Scroller are built on mousedown / mousemove /
++	 * mouseup: LunaSysMgr's WebKit turned a finger into a mouse. Chromium
++	 * with --touch-events only synthesises mouse events for a tap, so a
++	 * drag produces touch events alone and no Mojo list or scene can be
++	 * scrolled. Once a single finger has moved past a small slop, replay the
++	 * gesture as the mouse sequence Mojo expects. Taps are left to Chromium
++	 * untouched, so focus, links and Mojo taps behave exactly as before.
++	 */
++	var DRAG_SLOP = 8;
++
++	function installTouchDragShim() {
++		var start = null;		// {x, y, target} of the finger, until it drags
++		var dragging = false;
++
++		function mouse(type, target, t) {
++			var ev = new MouseEvent(type, {
++				bubbles: true, cancelable: true, view: window,
++				clientX: t.clientX, clientY: t.clientY,
++				screenX: t.screenX, screenY: t.screenY,
++				button: 0, buttons: type === "mouseup" ? 0 : 1, detail: 1
++			});
++			(target || document).dispatchEvent(ev);
++		}
++
++		function under(t) {
++			return document.elementFromPoint(t.clientX, t.clientY) || document.body;
++		}
++
++		document.addEventListener("touchstart", function (e) {
++			if (e.target && e.target.closest && e.target.closest("[data-mojocompat-native-scroll]")) {
++				start = null;		// our own overlays scroll natively
++				dragging = false;
++				return;
++			}
++			if (e.touches.length !== 1) {
++				if (dragging) {
++					mouse("mouseup", under(e.touches[0]), e.touches[0]);
++				}
++				start = null;
++				dragging = false;
++				return;
++			}
++			var t = e.touches[0];
++			start = {x: t.clientX, y: t.clientY, sx: t.screenX, sy: t.screenY, target: e.target};
++			dragging = false;
++		}, true);
++
++		document.addEventListener("touchmove", function (e) {
++			if (!start || e.touches.length !== 1) {
++				return;
++			}
++			var t = e.touches[0];
++			if (!dragging) {
++				if (Math.abs(t.clientX - start.x) < DRAG_SLOP &&
++				    Math.abs(t.clientY - start.y) < DRAG_SLOP) {
++					return;
++				}
++				dragging = true;
++				mouse("mousedown", start.target,
++				      {clientX: start.x, clientY: start.y, screenX: start.sx, screenY: start.sy});
++			}
++			if (e.cancelable) {
++				e.preventDefault();	// Mojo scrolls itself; no native pan
++			}
++			mouse("mousemove", under(t), t);
++		}, {capture: true, passive: false});
++
++		function end(e) {
++			if (dragging) {
++				var t = e.changedTouches[0];
++				mouse("mouseup", under(t), t);
++			}
++			start = null;
++			dragging = false;
++		}
++		document.addEventListener("touchend", end, true);
++		document.addEventListener("touchcancel", end, true);
++	}
++
++	/*
++	 * document.cookie on file://
++	 * --------------------------
++	 * Mojo.Model.Cookie - where Mojo apps keep their preferences - is
++	 * document.cookie. Chromium does not store cookies for file:// pages, so
++	 * every write was dropped and apps forgot everything between launches
++	 * (SimpleChat asked for a user name every time). Where a probe cookie
++	 * does not stick, back document.cookie with localStorage, keyed by the
++	 * application directory so apps do not see each other's.
++	 */
++	function installCookieShim() {
++		try {
++			document.cookie = "mojocompat_probe=1";
++			if (document.cookie.indexOf("mojocompat_probe=1") !== -1) {
++				document.cookie = "mojocompat_probe=; expires=Thu, 01 Jan 1970 00:00:00 GMT";
++				return;			// real cookies work here
++			}
++		} catch (e) {}
++
++		var m = /\/applications\/([^\/]+)\//.exec(location.pathname);
++		var key = "mojocompat.cookies." + (m ? m[1] : location.pathname);
++
++		function load() {
++			try {
++				return JSON.parse(localStorage.getItem(key)) || {};
++			} catch (e) {
++				return {};
++			}
++		}
++		function save(jar) {
++			try {
++				localStorage.setItem(key, JSON.stringify(jar));
++			} catch (e) {}
++		}
++
++		try {
++			Object.defineProperty(document, "cookie", {
++				configurable: true,
++				get: function () {
++					var jar = load(), now = Date.now(), out = [], changed = false;
++					for (var name in jar) {
++						if (jar[name].exp && jar[name].exp < now) {
++							delete jar[name];
++							changed = true;
++						} else {
++							out.push(name + "=" + jar[name].v);
++						}
++					}
++					if (changed) {
++						save(jar);
++					}
++					return out.join("; ");
++				},
++				set: function (text) {
++					var parts = String(text).split(";");
++					var eq = parts[0].indexOf("=");
++					if (eq < 1) {
++						return;
++					}
++					var name = parts[0].slice(0, eq).trim();
++					var value = parts[0].slice(eq + 1).trim();
++					var exp = 0;
++					for (var i = 1; i < parts.length; i++) {
++						var kv = parts[i].split("=");
++						var k = kv[0].trim().toLowerCase();
++						if (k === "expires") {
++							exp = Date.parse(kv.slice(1).join("=").trim()) || 0;
++						} else if (k === "max-age") {
++							exp = Date.now() + 1000 * parseInt(kv[1], 10);
++						}
++					}
++					var jar = load();
++					if (exp && exp <= Date.now()) {
++						delete jar[name];
++					} else {
++						jar[name] = {v: value, exp: exp};
++					}
++					save(jar);
++				}
++			});
++		} catch (e) {}
++	}
++
++	/*
++	 * Input-method text -> the key events Mojo's TextField watches
++	 * ------------------------------------------------------------
++	 * Every key on LuneOS, physical or on-screen, reaches a field through
++	 * the input method, so Chromium delivers text as composition / input
++	 * events with keyCode 229 and no keypress. TextField hides its hint on
++	 * a printable keypress and brings it back on a Delete keyup, so the
++	 * "Enter a message..." hint stayed drawn over whatever was typed. After
++	 * each input event, send TextField the key event it would have seen.
++	 */
++	function installInputKeyShim() {
++		function key(type, target, code) {
++			var ev = new KeyboardEvent(type, {bubbles: true, cancelable: true});
++			try {
++				Object.defineProperty(ev, "keyCode", {value: code});
++				Object.defineProperty(ev, "charCode", {value: type === "keypress" ? code : 0});
++				Object.defineProperty(ev, "which", {value: code});
++			} catch (e) {
++				return;
++			}
++			target.dispatchEvent(ev);
++		}
++
++		// Tapping inside a field did not move the caret: Mojo's gesture layer
++		// cancels every mousedown, and in Chromium that mousedown is what
++		// places the caret (LunaSysMgr's WebKit placed it regardless). For a
++		// press on a text field, let the browser have its default.
++		document.addEventListener("mousedown", function (e) {
++			var t = e.target;
++			if (t && (t.tagName === "TEXTAREA" ||
++			          (t.tagName === "INPUT" && /^(text|search|email|url|tel|password|number|)$/i.test(t.type || "")))) {
++				e.preventDefault = function () {};
++			}
++		}, true);
++
++		document.addEventListener("input", function (e) {
++			var t = e.target;
++			if (!t || (t.tagName !== "TEXTAREA" && t.tagName !== "INPUT")) {
++				return;
++			}
++			if (t.value === "") {
++				key("keyup", t, 8);		// Mojo.Char.backspace: hint back
++			} else if (/^insert/.test(e.inputType || "") && e.inputType !== "insertLineBreak") {
++				var d = e.data || " ";
++				key("keypress", t, d.charCodeAt(d.length - 1));
++			}
++		}, true);
++	}
++
++	/*
++	 * Mojo.FilePicker
++	 * ---------------
++	 * pickFile() pushes a cross-app scene owned by com.palm.mojo-systemui (or
++	 * com.palm.systemui before webOS 3). Neither exists on LuneOS, so the
++	 * scene came up blank and popped straight back. Replace it with a small
++	 * picker drawn in the calling stage, listing files through
++	 * org.webosports.service.filemanager (the File Manager's service, which
++	 * needs "filemanager-service.operation" in the app's client permissions).
++	 */
++	var PICKER_ROOT = "/media/internal";
++	// Web apps may only read file:// under their own and the framework
++	// directories; /usr/palm/frameworks/mojo/media-internal is a symlink to
++	// /media/internal that makes user files loadable again, as they were on
++	// webOS, so the picker can show real thumbnails.
++	var PICKER_MEDIA_ALIAS = "/usr/palm/frameworks/mojo/media-internal";
++	function loadableUrl(path) {
++		if (path.indexOf(PICKER_ROOT + "/") === 0) {
++			return "file://" + PICKER_MEDIA_ALIAS + path.slice(PICKER_ROOT.length);
++		}
++		return "file://" + path;
++	}
++	var PICKER_KINDS = {
++		image: /\.(jpe?g|png|gif|bmp|webp)$/i,
++		audio: /\.(mp3|m4a|aac|ogg|oga|wav|flac|amr)$/i,
++		ringtone: /\.(mp3|m4a|aac|ogg|oga|wav|flac|amr)$/i,
++		video: /\.(mp4|m4v|3gp|3g2|mkv|webm|mov|avi)$/i
++	};
++
++	// Plain one-shot bus call. Mojo.Service.Request adds a $activity the
++	// file manager service then fails to monitor ("Denied method call
++	// monitor"), so talk to the bridge directly.
++	function listDirectory(path, cb) {
++		var Bridge = window.PalmServiceBridge || (window.opener && window.opener.PalmServiceBridge);
++		if (!Bridge) {
++			cb.onFailure({errorText: "no PalmServiceBridge"});
++			return;
++		}
++		var bridge = new Bridge();
++		listDirectory.live = bridge;	// held until the reply, or it can be collected
++		bridge.onservicecallback = function (text) {
++			var r;
++			try {
++				r = JSON.parse(text);
++			} catch (e) {
++				r = {returnValue: false, errorText: String(text)};
++			}
++			if (r.returnValue) {
++				cb.onSuccess(r);
++			} else {
++				cb.onFailure(r);
++			}
++			bridge.cancel && bridge.cancel();
++		};
++		bridge.call("luna://org.webosports.service.filemanager/GetDirectories", JSON.stringify({dir: path}));
++	}
++
++	function installFilePicker(M) {
++		if (!M || !M.FilePicker) {
++			return;
++		}
++
++		M.FilePicker.pickFile = function (params, stageController) {
++			params = params || {};
++			var kinds = params.kinds || (params.kind ? [params.kind] : []);
++			var patterns = kinds.map(function (k) { return PICKER_KINDS[k]; }).filter(Boolean);
++			var accept = function (name) {
++				return patterns.length === 0 || patterns.some(function (re) { return re.test(name); });
++			};
++			var win = (stageController && stageController.window) || window;
++			var doc = win.document;
++			var dir = params.defaultPath || PICKER_ROOT;
++			var title = params.actionName ? params.actionName : "Select a file";
++			if (kinds.length === 1 && kinds[0] === "image" && !params.actionName) {
++				title = "Select a photo";
++			}
++
++			var overlay = doc.createElement("div");
++			overlay.setAttribute("data-mojocompat-native-scroll", "");
++			overlay.style.cssText = "position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483000;" +
++				"background:#1f1f1f;color:#eee;display:flex;flex-direction:column;" +
++				"font-family:Prelude,sans-serif;font-size:18px;";
++			overlay.innerHTML =
++				'<div style="padding:12px 14px;background:#3a3a3a;border-bottom:1px solid #555;font-weight:bold">' +
++				'<div class="mc-title"></div><div class="mc-path" style="font-size:13px;font-weight:normal;color:#aaa;margin-top:3px;word-break:break-all"></div></div>' +
++				'<div class="mc-list" style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch"></div>' +
++				'<div style="padding:10px;background:#3a3a3a;border-top:1px solid #555">' +
++				'<div class="mc-cancel" style="text-align:center;padding:12px;border-radius:8px;background:#555">Cancel</div></div>';
++			overlay.querySelector(".mc-title").textContent = title;
++			var list = overlay.querySelector(".mc-list");
++			var pathLabel = overlay.querySelector(".mc-path");
++			doc.body.appendChild(overlay);
++
++			function close() {
++				doc.removeEventListener("keydown", onBackKey, true);
++				doc.removeEventListener("keyup", onBackKey, true);
++				if (overlay.parentNode) {
++					overlay.parentNode.removeChild(overlay);
++				}
++			}
++			function cancel() {
++				close();
++				if (params.onCancel) {
++					params.onCancel();
++				}
++			}
++			// The back gesture: the compositor sends Escape to the focused
++			// card (Mojo turns its keyup into Mojo.Event.back). The picker is
++			// ours, not a scene, so take it here: cancel on keyup, and keep
++			// both halves away from the scene underneath.
++			function onBackKey(e) {
++				if (e.keyCode !== 27) {
++					return;
++				}
++				e.stopPropagation();
++				e.preventDefault();
++				if (e.type === "keyup") {
++					cancel();
++				}
++			}
++			doc.addEventListener("keydown", onBackKey, true);
++			doc.addEventListener("keyup", onBackKey, true);
++			function row(label, sub, icon, onTap) {
++				var r = doc.createElement("div");
++				r.style.cssText = "display:flex;align-items:center;min-height:56px;padding:4px 12px;border-bottom:1px solid #333";
++				var ic = doc.createElement("div");
++				ic.style.cssText = "width:48px;height:48px;flex:none;margin-right:12px;display:flex;align-items:center;justify-content:center;font-size:26px;color:#999";
++				if (icon === "image") {
++					// Web apps may not read file:// outside their own folder,
++					// so there are no thumbnails: draw a picture instead.
++					var pic = doc.createElement("div");
++					pic.style.cssText = "width:36px;height:28px;border:2px solid #7aa7d6;border-radius:3px;position:relative;overflow:hidden;background:#27415c";
++					var hill = doc.createElement("div");
++					hill.style.cssText = "position:absolute;left:4px;bottom:-10px;width:24px;height:20px;background:#6fae5a;border-radius:50% 50% 0 0";
++					var sun = doc.createElement("div");
++					sun.style.cssText = "position:absolute;right:4px;top:4px;width:7px;height:7px;background:#f3d35c;border-radius:50%";
++					pic.appendChild(hill);
++					pic.appendChild(sun);
++					ic.appendChild(pic);
++				} else {
++					// Drawn in CSS: this file is read without a charset, so
++					// anything outside ASCII renders as mojibake.
++					var shape = doc.createElement("div");
++					if (icon === "folder") {
++						shape.style.cssText = "width:36px;height:26px;background:#c9a227;border-radius:2px 6px 4px 4px;box-shadow:inset 0 5px 0 #e0bb3c";
++					} else if (icon === "up") {
++						shape.style.cssText = "width:0;height:0;border-left:14px solid transparent;border-right:14px solid transparent;border-bottom:20px solid #999";
++					} else {
++						shape.style.cssText = "width:26px;height:34px;background:#888;border-radius:2px";
++					}
++					ic.appendChild(shape);
++				}
++				var t = doc.createElement("div");
++				t.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
++				t.textContent = label;
++				if (sub) {
++					var st = doc.createElement("div");
++					st.style.cssText = "font-size:12px;color:#999";
++					st.textContent = sub;
++					t.appendChild(st);
++				}
++				r.appendChild(ic);
++				r.appendChild(t);
++				r.addEventListener("click", onTap);
++				list.appendChild(r);
++			}
++			function message(text) {
++				var m = doc.createElement("div");
++				m.style.cssText = "padding:24px 16px;color:#aaa;text-align:center";
++				m.textContent = text;
++				list.appendChild(m);
++			}
++			function split(v) {
++				if (Array.isArray(v)) {
++					return v;
++				}
++				return (v ? String(v).split(",") : []).filter(function (n) {
++					return n && n.charAt(0) !== ".";
++				}).sort(function (a, b) { return a.toLowerCase() < b.toLowerCase() ? -1 : 1; });
++			}
++			function show(path) {
++				dir = path;
++				pathLabel.textContent = path;
++				list.innerHTML = "";
++				list.scrollTop = 0;
++				message("Loading...");
++				listDirectory(path, {
++					onSuccess: function (r) {
++						list.innerHTML = "";
++						if (path !== "/" && path !== PICKER_ROOT) {
++							var up = path.replace(/\/[^\/]+\/?$/, "") || "/";
++							row("..", "Up one folder", "up", function () { show(up); });
++						}
++						split(r.dirs).forEach(function (d) {
++							row(d, null, "folder", function () { show(path.replace(/\/$/, "") + "/" + d); });
++						});
++						var files = split(r.files).filter(accept);
++						var grid = null;
++						files.forEach(function (f) {
++							var full = path.replace(/\/$/, "") + "/" + f;
++							var isImage = PICKER_KINDS.image.test(f);
++							var pick = function () {
++								close();
++								if (params.onSelect) {
++									params.onSelect({fullPath: full, iconPath: full,
++										attachmentType: isImage ? "image" : "file"});
++								}
++							};
++							if (!isImage) {
++								row(f, null, "file", pick);
++								return;
++							}
++							// Photos: a grid of real thumbnails, three across.
++							if (!grid) {
++								grid = doc.createElement("div");
++								grid.style.cssText = "display:flex;flex-wrap:wrap;padding:3px";
++								list.appendChild(grid);
++							}
++							var tile = doc.createElement("div");
++							tile.style.cssText = "width:calc(33.333% - 6px);margin:3px;aspect-ratio:1;position:relative;background:#333;overflow:hidden;border-radius:3px";
++							var img = doc.createElement("img");
++							img.loading = "lazy";
++							img.decoding = "async";
++							img.style.cssText = "width:100%;height:100%;object-fit:cover;display:block";
++							img.src = loadableUrl(full);
++							var cap = doc.createElement("div");
++							cap.style.cssText = "position:absolute;left:0;right:0;bottom:0;padding:2px 4px;font-size:10px;background:rgba(0,0,0,0.55);color:#ddd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
++							cap.textContent = f;
++							tile.appendChild(img);
++							tile.appendChild(cap);
++							tile.addEventListener("click", pick);
++							grid.appendChild(tile);
++						});
++						if (!list.firstChild || (split(r.dirs).length === 0 && files.length === 0)) {
++							message("No matching files here.");
++						}
++					},
++					onFailure: function (r) {
++						list.innerHTML = "";
++						message("Could not list " + path + ": " + ((r && r.errorText) || "unknown error"));
++					}
++				});
++			}
++
++			overlay.querySelector(".mc-cancel").addEventListener("click", cancel);
++			show(dir);
++		};
++	}
++
++	/*
++	 * downloadmanager/upload with custom headers
++	 * ------------------------------------------
++	 * LunaDownloadMgr accepts customHttpHeaders on upload and then drops
++	 * them: the request goes out with the file and postParameters but none
++	 * of the headers (checked against a local listener). Servers that
++	 * authenticate uploads by header refuse it - SimpleChat's answers "no
++	 * allowed Client-Id in POST headers". For a file under /media/internal,
++	 * which the page can read through PICKER_MEDIA_ALIAS, do the upload
++	 * from the page instead, headers included, and report back in the
++	 * download manager's own reply shape. Everything else still goes to
++	 * the service.
++	 */
++	function installUploadShim(M) {
++		if (!M || !M.Service || !M.Service.Request || M.Service.Request._luneUpload) {
++			return;
++		}
++		var Original = M.Service.Request;
++
++		function wantsShim(url, options) {
++			var p = options && options.parameters;
++			return /downloadmanager/.test(url || "") &&
++				(options.method === "upload" || /\/upload$/.test(url)) &&
++				p && p.fileName && p.fileName.indexOf(PICKER_ROOT + "/") === 0 &&
++				p.customHttpHeaders && p.customHttpHeaders.length;
++		}
++
++		function upload(options) {
++			var p = options.parameters;
++			var done = options.onSuccess || function () {};
++			var reply = function (extra) {
++				var r = {ticket: 0, url: p.url, sourceFile: p.fileName, completed: true,
++					completionCode: 0, httpCode: 0, responseString: "", returnValue: true};
++				for (var k in extra) {
++					r[k] = extra[k];
++				}
++				done(r);
++				if (options.onComplete) {
++					options.onComplete(r);
++				}
++			};
++			var xhr = new XMLHttpRequest();
++			var read = new XMLHttpRequest();
++			read.open("GET", loadableUrl(p.fileName));
++			read.responseType = "blob";
++			read.onload = function () {
++				if (read.status !== 200 && read.status !== 0) {
++					reply({completionCode: -1, errorText: "cannot read " + p.fileName});
++					return;
++				}
++				var blob = read.response;
++				if (p.contentType) {
++					blob = new Blob([blob], {type: p.contentType});
++				}
++				var form = new FormData();
++				(p.postParameters || []).forEach(function (pp) {
++					form.append(pp.key, pp.data);
++				});
++				form.append(p.fileLabel || "file", blob, p.fileName.split("/").pop());
++				xhr.open("POST", p.url);
++				p.customHttpHeaders.forEach(function (h) {
++					var i = String(h).indexOf(":");
++					if (i > 0) {
++						xhr.setRequestHeader(h.slice(0, i).trim(), h.slice(i + 1).trim());
++					}
++				});
++				xhr.onload = function () {
++					reply({httpCode: xhr.status, responseString: xhr.responseText});
++				};
++				xhr.onerror = function () {
++					reply({completionCode: -1, httpCode: xhr.status});
++				};
++				xhr.send(form);
++			};
++			read.onerror = function () {
++				reply({completionCode: -1, errorText: "cannot read " + p.fileName});
++			};
++			read.send();
++			return {cancel: function () { try { xhr.abort(); } catch (e) {} }};
++		}
++
++		var Wrapped = function (url, options, requestOptions) {
++			if (wantsShim(url, options)) {
++				return upload(options);
++			}
++			return new Original(url, options, requestOptions);
++		};
++		Wrapped.prototype = Original.prototype;
++		for (var k in Original) {
++			if (Object.prototype.hasOwnProperty.call(Original, k)) {
++				Wrapped[k] = Original[k];
++			}
++		}
++		Wrapped._luneUpload = true;
++		M.Service.Request = Wrapped;
++	}
++
+ 	installDeviceInfoShim();
+ 	installPalmSystemShim();
++	installTouchDragShim();
++	installCookieShim();
++	installInputKeyShim();
+ 
+ 	// Exposed so a scene that injects styles by hand can re-run the pass.
+-	window.MojoCompat = {patchStyleSheets: patchAllStyleSheets};
++	window.MojoCompat = {patchStyleSheets: patchAllStyleSheets, installFilePicker: installFilePicker, installUploadShim: installUploadShim};
+ }());
+-- 
+2.34.1
+
