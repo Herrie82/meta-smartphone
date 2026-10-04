@@ -1,0 +1,55 @@
+From: Herman van Hazendonk <github.com@herrie.org>
+Subject: [PATCH] mediatek: disp_pwm: invert the backlight level on the Titan Pocket
+
+On the Titan Pocket (project g66v71c2k) the brightness slider works
+backwards with this tree: LunaDisplayManager sends rising levels
+(disp_pwm_set_backlight_cmdq level_1024 0..1023, in the right direction)
+and the panel gets darker.
+
+The stock kernel enables AGOLD_CP2166_LCM_BACKLIGHT for this project,
+which the reconstructed tree does not have: the panel module's CP2166
+backlight driver reads the display PWM with inverted sense, and stock
+compensates. The Titan Slim's equivalent (IS31FL, g83v71c2k) was
+recovered from the stock binary in 88eec0cf7f4a; nothing was for g66.
+
+Flip every non-zero level for the g66 projects. 0 is left alone, so the
+PWM is still disabled for blanking exactly as before.
+
+Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
+Upstream-Status: Pending
+
+--- a/drivers/misc/mediatek/video/common/pwm10/ddp_pwm.c
++++ b/drivers/misc/mediatek/video/common/pwm10/ddp_pwm.c
+@@ -631,6 +631,17 @@
+ 
+ 		level_1024 = disp_pwm_level_remap(id, level_1024);
+ 
++#ifdef USE_CP2166_INVERTED_PWM
++		/*
++		 * The CP2166 backlight driver on the Titan Pocket's panel
++		 * module reads the PWM duty inverted: more duty, less light.
++		 * Flip every non-zero level; 0 still disables the PWM below,
++		 * which is what blanking relies on.
++		 */
++		if (level_1024 > 0)
++			level_1024 = 1024 - level_1024;
++#endif
++
+ #ifdef USE_IS31FL_LED
+ 		/* Modified hardware control for g83v71c2k_dfl_eea project */
+ 		if (level_1024 < 1) {
+--- a/drivers/misc/mediatek/video/common/pwm10/Makefile
++++ b/drivers/misc/mediatek/video/common/pwm10/Makefile
+@@ -24,6 +24,12 @@
+ obj-y += is31fl.o is31fl_init.o
+ endif
+ 
++# Titan Pocket: the panel module's CP2166 backlight driver reads the display
++# PWM with inverted sense (stock: AGOLD_CP2166_LCM_BACKLIGHT, not in this tree)
++ifneq (,$(filter "g66v71c2k_dfl_eea" "g66v71c2k_dfl_tee",$(CONFIG_ARCH_MTK_PROJECT)))
++ccflags-y += -DUSE_CP2166_INVERTED_PWM=1
++endif
++
+ ccflags-y += \
+ 				-I$(srctree)/drivers/misc/mediatek/video/include     \
+ 				-I$(srctree)/drivers/misc/mediatek/video/common/IPv1     \

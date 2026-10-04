@@ -1,0 +1,106 @@
+From: Herman van Hazendonk <github.com@herrie.org>
+Subject: [PATCH] mediatek: give K&R definitions a (void) prototype
+
+GCC rejects a K&R empty parameter list where the kernel's own top-level
+Makefile has asked for -Werror=strict-prototypes:
+
+  drivers/misc/mediatek/perf/perf_tracker.c:190:27: error: function
+      declaration isn't a prototype [-Werror=strict-prototypes]
+
+Every function touched here already has a (void) prototype in a header -
+helio-dvfsrc-opp.h, display_recorder.h, mtk-auddrv-afe.h and
+mtk_mfg_counter.h - so the definitions were simply disagreeing with their own
+declarations.
+
+Deliberately NOT touched: the twenty chsc_*_node_*_declare() sites in
+drivers/input/touchscreen/mediatek/chsc5xxx/. Those look identical to a grep
+but are macro invocations -
+
+  #define chsc_version_node_write_declare() \
+      chsc_version_node_write(struct file* fp, const char __user *buff, \
+                              size_t len, loff_t* ppos)
+
+- so they already expand to a full prototype, and giving them (void) would
+break the expansion.
+
+Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
+Upstream-Status: Pending
+---
+--- a/drivers/misc/mediatek/perf/perf_tracker.c
++++ b/drivers/misc/mediatek/perf/perf_tracker.c
+@@ -187,12 +187,12 @@
+ 	return 0;
+ }
+ 
+-int __attribute__((weak)) get_cur_vcore_uv()
+-{
+-	return 0;
+-}
+-
+-int __attribute__((weak)) get_cur_ddr_khz()
++int __attribute__((weak)) get_cur_vcore_uv(void)
++{
++	return 0;
++}
++
++int __attribute__((weak)) get_cur_ddr_khz(void)
+ {
+ 	return 0;
+ }
+--- a/drivers/misc/mediatek/video/mt6771/dispsys/display_recorder.c
++++ b/drivers/misc/mediatek/video/mt6771/dispsys/display_recorder.c
+@@ -1315,7 +1315,7 @@
+ 	       sizeof(dprec_string_buffer_analysize));
+ }
+ 
+-char *dprec_logger_get_dump_addr()
++char *dprec_logger_get_dump_addr(void)
+ {
+ 	return dprec_string_buffer_analysize;
+ }
+@@ -1745,7 +1745,7 @@
+ {
+ }
+ 
+-char *dprec_logger_get_dump_addr()
++char *dprec_logger_get_dump_addr(void)
+ {
+ 	return NULL;
+ }
+--- a/sound/soc/mediatek/common_int/mtk-auddrv-afe.c
++++ b/sound/soc/mediatek/common_int/mtk-auddrv-afe.c
+@@ -163,12 +163,12 @@
+ 	return (dma_addr_t)(AFE_INTERNAL_SRAM_PHY_BASE + SramCaptureOffSet);
+ }
+ 
+-void *Get_Afe_SramBase_Pointer()
++void *Get_Afe_SramBase_Pointer(void)
+ {
+ 	return AFE_SRAM_ADDRESS;
+ }
+ 
+-void *Get_Afe_SramCaptureBase_Pointer()
++void *Get_Afe_SramCaptureBase_Pointer(void)
+ {
+ 	char *CaptureSramPointer =
+ 		(char *)(AFE_SRAM_ADDRESS) + SramCaptureOffSet;
+@@ -176,7 +176,7 @@
+ 	return (void *)CaptureSramPointer;
+ }
+ 
+-void *Get_Afe_Powertop_Pointer()
++void *Get_Afe_Powertop_Pointer(void)
+ {
+ 	return AFE_TOP_ADDRESS;
+ }
+--- a/drivers/misc/mediatek/gpu/gpu_mali/mali_valhall/mali-r25p0/drivers/gpu/arm/midgard/platform/mtk_platform_common/mtk_mfg_counter.c
++++ b/drivers/misc/mediatek/gpu/gpu_mali/mali_valhall/mali-r25p0/drivers/gpu/arm/midgard/platform/mtk_platform_common/mtk_mfg_counter.c
+@@ -768,7 +768,7 @@
+ 
+ 
+ // init but don't enable met
+-int gator_gpu_pmu_init()
++int gator_gpu_pmu_init(void)
+ {
+ 	int ret = PMU_OK;
+ 	int i, j, cnt, block_type;

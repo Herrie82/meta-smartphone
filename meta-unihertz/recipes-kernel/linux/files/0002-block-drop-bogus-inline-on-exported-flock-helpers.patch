@@ -1,0 +1,63 @@
+From: Herman van Hazendonk <github.com@herrie.org>
+Subject: [PATCH] block: keyslot-manager, blk-crypto: drop bogus inline on exported functions
+
+ksm_flock() and blk_crypto_flock() are exported with EXPORT_SYMBOL_GPL and
+called from other translation units, but both are declared and defined as a
+bare `inline`. The kernel #defines inline to carry __attribute__((always_inline)),
+so GCC has to inline every call and cannot, the body not being visible:
+
+  include/linux/keyslot-manager.h:101:13: error: inlining failed in call to
+      'always_inline' 'ksm_flock': function body not available
+
+clang accepted this; GCC does not, and it is wrong either way - a C99 `inline`
+definition with no extern declaration emits no external symbol at all, which is
+not what EXPORT_SYMBOL_GPL means. Drop the keyword from both the declarations
+and the definitions; they are ordinary external functions.
+
+Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
+Upstream-Status: Pending
+---
+--- a/include/linux/keyslot-manager.h
++++ b/include/linux/keyslot-manager.h
+@@ -98,7 +98,7 @@
+ 				      unsigned int wrapped_key_size,
+ 				      u8 *secret, unsigned int secret_size);
+ 
+-inline void ksm_flock(struct keyslot_manager *ksm, unsigned int flags);
++void ksm_flock(struct keyslot_manager *ksm, unsigned int flags);
+ 
+ #endif /* CONFIG_BLK_INLINE_ENCRYPTION */
+ 
+--- a/block/keyslot-manager.c
++++ b/block/keyslot-manager.c
+@@ -681,7 +681,7 @@
+  * detection, set another lock sub-class could avoid it.
+  *
+  */
+-inline void ksm_flock(struct keyslot_manager *ksm, unsigned int flags)
++void ksm_flock(struct keyslot_manager *ksm, unsigned int flags)
+ {
+ 	ksm->lock_flags = flags;
+ }
+--- a/include/linux/blk-crypto.h
++++ b/include/linux/blk-crypto.h
+@@ -32,7 +32,7 @@
+ int blk_crypto_evict_key(struct request_queue *q,
+ 			 const struct blk_crypto_key *key);
+ 
+-inline void blk_crypto_flock(struct keyslot_manager *ksm, unsigned int flags);
++void blk_crypto_flock(struct keyslot_manager *ksm, unsigned int flags);
+ 
+ 
+ #else /* CONFIG_BLK_INLINE_ENCRYPTION */
+--- a/block/blk-crypto.c
++++ b/block/blk-crypto.c
+@@ -305,7 +305,7 @@
+ }
+ EXPORT_SYMBOL_GPL(blk_crypto_evict_key);
+ 
+-inline void blk_crypto_flock(struct keyslot_manager *ksm, unsigned int flags)
++void blk_crypto_flock(struct keyslot_manager *ksm, unsigned int flags)
+ {
+ 	ksm_flock(ksm, flags);
+ }

@@ -1,0 +1,31 @@
+From: Herman van Hazendonk <github.com@herrie.org>
+Subject: [PATCH] soc: mediatek: cmdq: return NULL, not -ENOMEM, from a void * function
+
+cmdq_pkt_get_curr_buf_va() returns void * and its failure path returns -ENOMEM:
+
+  drivers/soc/mediatek/mtk-cmdq-helper.c:598:32: warning: returning 'int' from a
+      function with return type 'void *' makes pointer from integer without a
+      cast [-Wint-conversion]
+
+A caller that checked the result would take (void *)-12 for a valid pointer and
+dereference it. NULL is the convention for this signature, and nothing in the
+tree uses IS_ERR() on it - in fact the symbol is exported and has no in-tree
+caller at all, which is presumably how it survived.
+
+The sibling cmdq_pkt_get_curr_buf_pa() returns dma_addr_t, where -ENOMEM is
+merely an odd value rather than a bad pointer, and is left alone.
+
+Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
+Upstream-Status: Pending
+---
+--- a/drivers/soc/mediatek/mtk-cmdq-helper.c
++++ b/drivers/soc/mediatek/mtk-cmdq-helper.c
+@@ -595,7 +595,7 @@
+ 
+ 	if (unlikely(!pkt->avail_buf_size))
+ 		if (cmdq_pkt_add_cmd_buffer(pkt) < 0)
+-			return -ENOMEM;
++			return NULL;
+ 
+ 	buf = list_last_entry(&pkt->buf, typeof(*buf), list_entry);
+ 

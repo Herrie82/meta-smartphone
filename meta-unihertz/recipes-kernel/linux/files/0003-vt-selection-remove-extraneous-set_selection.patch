@@ -1,0 +1,40 @@
+From: Herman van Hazendonk <github.com@herrie.org>
+Subject: [PATCH] vt: selection: remove the extraneous set_selection definition
+
+This tree carries set_selection() twice: once taking sel_lock around
+console_lock (the post-CVE-2020-8648 form), and immediately after it an older
+copy that takes console_lock alone. A merge artefact - the file does not
+compile at all with both present:
+
+  drivers/tty/vt/selection.c:351:5: error: redefinition of 'set_selection'
+
+It goes unnoticed on stock because the Unihertz defconfigs set
+"# CONFIG_VT is not set" and nothing in drivers/tty/vt is built. LuneOS needs
+the virtual console, so enabling CONFIG_VT is what exposes it.
+
+Keep the definition that holds sel_lock; drop the stale one.
+
+Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
+Upstream-Status: Pending
+---
+--- a/drivers/tty/vt/selection.c
++++ b/drivers/tty/vt/selection.c
+@@ -348,18 +348,6 @@
+ 	return ret;
+ }
+ 
+-int set_selection(const struct tiocl_selection __user *v,
+-	struct tty_struct *tty)
+-{
+-	int ret;
+-
+-	console_lock();
+-	ret = __set_selection(v, tty);
+-	console_unlock();
+-
+-	return ret;
+-}
+-
+ /* Insert the contents of the selection buffer into the
+  * queue of the tty associated with the current console.
+  * Invoked by ioctl().

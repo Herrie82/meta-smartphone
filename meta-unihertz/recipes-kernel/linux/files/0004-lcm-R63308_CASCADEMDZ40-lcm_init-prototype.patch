@@ -1,0 +1,26 @@
+From: Herman van Hazendonk <github.com@herrie.org>
+Subject: [PATCH] mediatek: lcm: R63308_CASCADEMDZ40: give lcm_init a prototype
+
+K&R-style empty parameter list in the Titan Pocket's reverse-engineered panel
+driver:
+
+  R63308_CASCADEMDZ40.c:318:13: error: function declaration isn't a prototype
+      [-Werror=strict-prototypes]
+
+The kernel's own top-level Makefile asks for -Werror=strict-prototypes, so this
+is fatal rather than cosmetic. lcm_init takes no arguments; say so.
+
+Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
+Upstream-Status: Pending
+---
+--- a/drivers/misc/mediatek/lcm/R63308_CASCADEMDZ40/R63308_CASCADEMDZ40.c
++++ b/drivers/misc/mediatek/lcm/R63308_CASCADEMDZ40/R63308_CASCADEMDZ40.c
+@@ -315,7 +315,7 @@
+ 	params->dsi.ssc_disable = 1;
+ }
+ 
+-static void lcm_init()
++static void lcm_init(void)
+ {
+ 	LCM_LOGD("%s enter\n", __func__);
+ 
