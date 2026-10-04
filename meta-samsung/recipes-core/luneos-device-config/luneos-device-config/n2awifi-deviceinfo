@@ -1,0 +1,38 @@
+# Tier 1 adaptation for the Samsung Galaxy Tab Pro 10.1 Wi-Fi (SM-T520,
+# n2awifi, Exynos 5420). Nothing here has been run on hardware.
+#
+# Only what cannot be derived belongs here. The codename is the directory name;
+# luneos-device-config reads ro.product.vendor.device first, and the Lineage
+# 18.1 device tree sets PRODUCT_DEVICE := n2awifi (stock says picassowifi).
+
+# The panel is 1600x2560, native portrait (TARGET_SCREEN_WIDTH 1600 and
+# TARGET_SCREEN_HEIGHT 2560 in android_device_samsung_n2a-common's
+# device-common.mk). Geometry format as radon.
+# TODO(verify): the rotation the compositor and touch need on the tablet.
+deviceinfo_compositor_geometry="1600x2560+0+0r0s1"
+
+# Physical density of a 10.1" 2560x1600 panel: sqrt(1600^2 + 2560^2) / 10.1 =
+# 299 ppi, from the nominal diagonal. Not Lineage's 320 / ro.sf.lcd_density,
+# which is Android's density bucket.
+# TODO(verify): the real panel size (dumpsys display xDpi/yDpi).
+deviceinfo_display_dpi="299"
+
+# The GPU is an ARM Mali-T628 behind one file, /vendor/lib/egl/libGLES_mali.so,
+# which the EGL loader finds as libGLES_<name>.so for ro.hardware.egl=mali.
+# The vendor build.prop is given that property by the image recipe; this is
+# the host-side setting.
+# UNVERIFIED on hardware.
+deviceinfo_hardware_egl="mali"
+
+# Deliberately absent, because no value could be read yet:
+#
+#   deviceinfo_device_pixel_ratio
+#       a layout judgement for how many CSS pixels Enyo pages get; it wants to
+#       be set while looking at the shell on this panel, not guessed.
+#
+#   deviceinfo_binder_slots, deviceinfo_binder_radio_interface
+#       the Wi-Fi model has no modem.
+#
+#   deviceinfo_hybris_prefer_vndk, deviceinfo_force_hwc2
+#       to be decided from a boot: they are per-device workarounds for the
+#       audio HAL and the second hwcomposer open, not defaults.

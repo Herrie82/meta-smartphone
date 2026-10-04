@@ -1,0 +1,170 @@
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Sun, 4 Oct 2026 00:00:00 +0200
+Subject: [PATCH] pidfd: add P_PIDFD to waitid()
+
+[ Upstream commit 3695eae5fee0605f316fbaad0b9e3de791d7dfaf ]
+
+This adds the P_PIDFD type to waitid().
+One of the last remaining bits for the pidfd api is to make it possible
+to wait on pidfds. With P_PIDFD added to waitid() the parts of userspace
+that want to use the pidfd api to exclusively manage processes can do so
+now.
+
+One of the things this will unblock in the future is the ability to make
+it possible to retrieve the exit status via waitid(P_PIDFD) for
+non-parent processes if handed a _suitable_ pidfd that has this feature
+set. This is similar to what you can do on FreeBSD with kqueue(). It
+might even end up being possible to wait on a process as a non-parent if
+an appropriate property is enabled on the pidfd.
+
+With P_PIDFD no scoping of the process identified by the pidfd is
+possible, i.e. it explicitly blocks things such as wait4(-1), wait4(0),
+waitid(P_ALL), waitid(P_PGID) etc. It only allows for semantics
+equivalent to wait4(pid), waitid(P_PID). Users that need scoping should
+rely on pid-based wait*() syscalls for now.
+
+Signed-off-by: Christian Brauner <christian.brauner@ubuntu.com>
+Reviewed-by: Kees Cook <keescook@chromium.org>
+Reviewed-by: Oleg Nesterov <oleg@redhat.com>
+Link: https://lore.kernel.org/r/20190727222229.6516-2-christian@brauner.io
+
+Why this tree needs it: Samsung's 4.19.191 carries Android's backport of
+pidfd_open() (kernel/pid.c) and pidfd_poll() (kernel/fork.c) from 5.3, but not
+the 5.4 waitid() half, so waitid(P_PIDFD, ...) returns -EINVAL. Upstream those
+are one release apart, so the combination barely exists in the wild and
+userspace does not probe for it: GLib commits to its pidfd-based
+GChildWatchSource as soon as pidfd_open() succeeds. On this kernel every child
+reap then fails. Seen on the SM-T220 as, from umediaserver:
+
+	waitid(pid:28592, pidfd=12) failed: Invalid argument (22)
+	Pooled process 28592 exited with status -1.
+
+so no media pipeline ever starts and anything played through the webOS media
+server (HTML5 audio and video in web apps, e.g. the Testr app) is silent, while
+direct PulseAudio clients work.
+
+Taken from the same backport that shr-distribution/linux carries on its 4.19
+and 4.14 branches (commit bc5d2089f85e on key2/4.19). Every hunk applies to this
+tree with upstream's context intact, only at different line offsets. The
+"fork: CLONE_PIDFD: do not require a zeroed *parent_tidptr" fix that the 4.14
+branch needs is not required here: this tree's CLONE_PIDFD handling in
+copy_process() already has no such check.
+
+Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
+Upstream-Status: Backport [3695eae5fee0605f316fbaad0b9e3de791d7dfaf, v5.4]
+---
+--- a/include/linux/pid.h
++++ b/include/linux/pid.h
+@@ -71,6 +71,10 @@ extern struct pid init_struct_pid;
+
+ extern const struct file_operations pidfd_fops;
+
++struct file;
++
++extern struct pid *pidfd_pid(const struct file *file);
++
+ static inline struct pid *get_pid(struct pid *pid)
+ {
+ 	if (pid)
+--- a/include/uapi/linux/wait.h
++++ b/include/uapi/linux/wait.h
+@@ -17,6 +17,7 @@
+ #define P_ALL		0
+ #define P_PID		1
+ #define P_PGID		2
++#define P_PIDFD		3
+
+
+ #endif /* _UAPI_LINUX_WAIT_H */
+--- a/kernel/exit.c
++++ b/kernel/exit.c
+@@ -1550,6 +1550,23 @@ static long do_wait(struct wait_opts *wo)
+ 	return retval;
+ }
+
++static struct pid *pidfd_get_pid(unsigned int fd)
++{
++	struct fd f;
++	struct pid *pid;
++
++	f = fdget(fd);
++	if (!f.file)
++		return ERR_PTR(-EBADF);
++
++	pid = pidfd_pid(f.file);
++	if (!IS_ERR(pid))
++		get_pid(pid);
++
++	fdput(f);
++	return pid;
++}
++
+ static long kernel_waitid(int which, pid_t upid, struct waitid_info *infop,
+ 			  int options, struct rusage *ru)
+ {
+@@ -1572,19 +1589,29 @@ static long kernel_waitid(int which, pid_t upid, struct waitid_info *infop,
+ 		type = PIDTYPE_PID;
+ 		if (upid <= 0)
+ 			return -EINVAL;
++
++		pid = find_get_pid(upid);
+ 		break;
+ 	case P_PGID:
+ 		type = PIDTYPE_PGID;
+ 		if (upid <= 0)
+ 			return -EINVAL;
++
++		pid = find_get_pid(upid);
++		break;
++	case P_PIDFD:
++		type = PIDTYPE_PID;
++		if (upid < 0)
++			return -EINVAL;
++
++		pid = pidfd_get_pid(upid);
++		if (IS_ERR(pid))
++			return PTR_ERR(pid);
+ 		break;
+ 	default:
+ 		return -EINVAL;
+ 	}
+
+-	if (type < PIDTYPE_MAX)
+-		pid = find_get_pid(upid);
+-
+ 	wo.wo_type	= type;
+ 	wo.wo_pid	= pid;
+ 	wo.wo_flags	= options;
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -1752,6 +1752,14 @@ static __always_inline void delayed_free_task(struct task_struct *tsk)
+ 		free_task(tsk);
+ }
+
++struct pid *pidfd_pid(const struct file *file)
++{
++	if (file->f_op == &pidfd_fops)
++		return file->private_data;
++
++	return ERR_PTR(-EBADF);
++}
++
+ static int pidfd_release(struct inode *inode, struct file *file)
+ {
+ 	struct pid *pid = file->private_data;
+--- a/kernel/signal.c
++++ b/kernel/signal.c
+@@ -3418,8 +3418,11 @@ static int copy_siginfo_from_user_any(siginfo_t *kinfo, siginfo_t __user *info)
+
+ static struct pid *pidfd_to_pid(const struct file *file)
+ {
+-	if (file->f_op == &pidfd_fops)
+-		return file->private_data;
++	struct pid *pid;
++
++	pid = pidfd_pid(file);
++	if (!IS_ERR(pid))
++		return pid;
+
+ 	return tgid_pidfd_to_pid(file);
+ }
