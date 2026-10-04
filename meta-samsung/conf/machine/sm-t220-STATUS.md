@@ -108,7 +108,7 @@ Each of these cost real time and none is visible from the symptom.
   watch failed every reap; and the shared umediaserver config named a
   `reference-media-pipeline` that no package ships, with a decoder table too small
   for what `g-media-pipeline` requests.
-- **`stp_dump3` spins at about 93% CPU** from boot. `start-android-hals.sh`
+- **`stp_dump3` sat at about 93% CPU** in `top`. `start-android-hals.sh`
   starts every service init left stopped, including this "disabled" one;
   `deviceinfo_android_skip_services` stops it.
 - **Flashing.** Odin's userdata write left holes in the rootfs on this tablet,

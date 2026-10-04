@@ -55,12 +55,12 @@ deviceinfo_display_dpi="196"
 # only starts when persist.vendor.connsys.coredump.mode is 1 or 2, but
 # start-android-hals.sh starts every service init left stopped, so it ran
 # regardless: init logged "Processed ctl.start for 'stp_dump' from pid: 0". It is
-# MediaTek's connectivity firmware core-dump collector and spun at ~93% CPU from
-# boot (56 CPU-minutes after about 90 minutes), which is what made the whole
-# tablet crawl (load average ~26; an ssh file copy managed under 1 MiB/s). Nothing
-# on LuneOS reads its dumps. Measured on hardware: stopping it is harmless.
-# prop.halium (see android-system) sets the property to 0 as well, which keeps
-# init's own trigger from starting it.
+# MediaTek's connectivity firmware core-dump collector. It sat at about 93% CPU in
+# top (56 CPU-minutes accumulated in one reading) next to a load average around 26.
+# Nothing on LuneOS reads its dumps, and stopping it was harmless. (It was not what
+# limited an ssh file copy: that stayed under 1 MiB/s with it stopped, the Wi-Fi
+# path being the limit.) prop.halium (see android-system) sets the property to 0
+# as well, which keeps init's own trigger from starting it.
 deviceinfo_android_skip_services="stp_dump"
 
 # Deliberately absent, because no value could be read yet:
