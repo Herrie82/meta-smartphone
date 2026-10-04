@@ -55,6 +55,13 @@ lxc.mount.entry = /apex apex bind rbind,optional 0 0
 # Android 10/11+ devices have them.
 lxc.mount.entry = /odm odm bind bind,optional 0 0
 lxc.mount.entry = /vendor_dlkm vendor_dlkm bind bind,optional 0 0
+# Per-device Android property overrides. The GSI ships /system/etc/prop.halium as
+# an empty file meant as a bind-mount target ("to override property values set in
+# any other property files"), and init loads it with the other property files, so
+# the values are in place before any service or trigger reads them. A machine
+# installs its own file at /usr/lib/droid-system-overlay/etc/prop.halium (the
+# path FuriOS' adaptations use); optional, so devices without one are unaffected.
+lxc.mount.entry = /usr/lib/droid-system-overlay/etc/prop.halium system/etc/prop.halium none bind,optional,create=file 0 0
 
 # Do not unshare the IPC or USER namespaces.
 #
