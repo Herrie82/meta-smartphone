@@ -1,0 +1,34 @@
+# Tier 1 adaptation for the BraX3 (MT6835 / Dimensity 6300, 6.56" 720x1612).
+#
+# Only what cannot be derived belongs here. Vendor API level, panel geometry,
+# density (ro.sf.lcd_density) and the touchscreen node derive on a Treble
+# device. None of this has been run on hardware yet.
+
+# The power key and the volume rocker, pinned by name: "mtk-pmic-keys"
+# (drivers/input/keyboard/mtk-pmic-keys.c) and "mtk-kpd" (KPD_NAME in mtk-kpd.c),
+# both in the stock vendor_boot module set.
+deviceinfo_key_devices_by_name="mtk-pmic-keys;mtk-kpd"
+
+# Qt's hwcomposer QPA backend rather than letting it pick, as on every MediaTek
+# port so far (mp01, q25, radon). The UBports port forces the same
+# (MIR_ANDROID_FORCE_HWC2=1 in lsc-wrapper.d/10-force-hwc2.conf).
+deviceinfo_force_hwc2="1"
+
+# MediaTek's audio HAL runs at 48 kHz; the UBports port loads module-droid-card
+# with rate=48000 (droid_card_custom.pa), as mp01 and q25 do.
+deviceinfo_audio_sample_rate="48000"
+
+# Deliberately absent until measured on the device:
+#
+#   deviceinfo_hybris_prefer_vndk
+#       Needed on the MT6789 A12 vendors because a vendor library imported a
+#       libbase symbol the 16 GSI dropped. This is an Android 16 vendor built
+#       against the same platform, so the reason may not exist. Add it if
+#       pulseaudio crashes on an unresolved android::base symbol.
+#
+#   deviceinfo_bluebinder_ext_features_page_2_mask
+#       The MT6789 connac1x workaround. ro.vendor.bt.platform=connac1x here too,
+#       so it is the first thing to try if hci0 never comes up - not before.
+#
+#   deviceinfo_display_dpi
+#       269 ppi physically; ro.sf.lcd_density is 280. Let derivation run first.
