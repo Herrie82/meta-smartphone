@@ -55,7 +55,16 @@ teardown() {
 }
 
 # adbd refuses to start without this marker (ConditionPathExists in its unit).
-[ -e /etc/usb-debugging-enabled ] || touch /etc/usb-debugging-enabled
+# The package installs it, so USB debugging is on from the first boot; after
+# that it is the user's to turn off (Settings > Developer Options, through
+# org.webosports.service.devmode), and an image that recreated it at every boot
+# undid that. With it gone, set up rndis alone: adbd would never claim the
+# endpoints and the wait below would only delay rndis by its full 10s.
+if [ ! -e /etc/usb-debugging-enabled ]; then
+    /usr/bin/android-gadget-setup rndis
+    UDC=$(first_real_udc)
+    [ -n "$UDC" ] && ! bound && echo "$UDC" > "$GADGET/UDC" 2>/dev/null
+else
 
 /usr/bin/android-gadget-setup rndis,adb
 
@@ -92,6 +101,8 @@ if ! bound; then
     /usr/bin/android-gadget-setup rndis
     UDC=$(first_real_udc)
     [ -n "$UDC" ] && ! bound && echo "$UDC" > "$GADGET/UDC" 2>/dev/null
+fi
+
 fi
 
 # rndis0 comes up DOWN with no address; usb-ip.sh sets both and is idempotent.
