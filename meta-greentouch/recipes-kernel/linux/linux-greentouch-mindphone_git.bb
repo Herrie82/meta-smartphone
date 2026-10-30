@@ -53,7 +53,9 @@ do_configure:prepend() {
 # "fork: CLONE_PIDFD: do not require a zeroed *parent_tidptr" - without it the
 # Sep 25 waitid(P_PIDFD) backport makes Qt's QProcess::startDetached() fail with
 # EINVAL, so the compositor never reports ready and restarts every 90 s.
-SRCREV = "06873421d3907d19e3629f17c81a5fed068c0d42"
+# "video: pwm10: clear stray CON_0 bits on mt6739" - the backlight turned full
+# white at screen-off, with brightness inverted, until the next reboot.
+SRCREV = "4c2caf966592c07559d3e908dcc8c26a4517d982"
 
 KV = "4.14.186"
 PV = "${KV}+git"
