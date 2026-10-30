@@ -67,6 +67,10 @@ usb_setup_configfs() {
     
     mkdir -p $GADGET_ROOT
     mount -t configfs none $GADGET_ROOT || true
+    # usb_gadget only appears once libcomposite is loaded. Halium kernels
+    # build it in; where it is a module (qemux86-64, mainline) nothing else
+    # loads it before adbd starts, so g1 below could not be created.
+    [ -d "$GADGET_DIR" ] || modprobe libcomposite
 
     mkdir $GADGET_DIR/g1
     write $GADGET_DIR/g1/idVendor                   "$idVendor"
