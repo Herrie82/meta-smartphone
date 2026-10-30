@@ -55,7 +55,9 @@ do_configure:prepend() {
 # EINVAL, so the compositor never reports ready and restarts every 90 s.
 # "video: pwm10: clear stray CON_0 bits on mt6739" - the backlight turned full
 # white at screen-off, with brightness inverted, until the next reboot.
-SRCREV = "4c2caf966592c07559d3e908dcc8c26a4517d982"
+# Revert "video: mt6739: resume display in mtkfb_open when slept" - it left the
+# panel asleep behind a lit backlight after every screen-on.
+SRCREV = "88bac7c802c3be9fd69432513b9ce3f29a0f13e3"
 
 KV = "4.14.186"
 PV = "${KV}+git"
