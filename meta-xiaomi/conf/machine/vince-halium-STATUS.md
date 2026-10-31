@@ -27,7 +27,13 @@ below comes from the trees, the blobs or the built image, none from a phone.
 - Fingerprint: the vendor has the goodix and fpc HALs, not `gf_fingerprint.default.so`, so the tissot block of
   fingerprint-hal-fixup is skipped and only its uinput fix runs.
 - Key devices, pixel ratio and the 401 PPI are not confirmed. The device tree's panel dimensions cannot give it.
-- The phone's firmware partitions must suit LineageOS 18.1. No install package or route is defined yet.
+- The phone's firmware partitions must suit LineageOS 18.1.
+
+## Install
+
+`bitbake luneos-dev-package` gives `luneos-dev-package-vince-halium-*.zip`, flashed from a custom recovery
+that can mount `/data`. It writes `/dev/block/bootdevice/by-name/boot` and unpacks to `/data/luneos`;
+`vendor.img` and the GSI come with it, so `system` and `cust` are not touched. Never tried on a phone.
 
 ## Open
 
