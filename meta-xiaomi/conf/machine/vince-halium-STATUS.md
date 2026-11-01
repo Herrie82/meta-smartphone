@@ -31,9 +31,15 @@ below comes from the trees, the blobs or the built image, none from a phone.
 
 ## Install
 
-`bitbake luneos-dev-package` gives `luneos-dev-package-vince-halium-*.zip`, flashed from a custom recovery
-that can mount `/data`. It writes `/dev/block/bootdevice/by-name/boot` and unpacks to `/data/luneos`;
-`vendor.img` and the GSI come with it, so `system` and `cust` are not touched. Never tried on a phone.
+`bitbake luneos-dev-fastboot-package` gives a zip with `boot.img`, `userdata.img` (5,253,365,760 B, plain ext4
+holding `rootfs.img`) and `flash.sh`, which flashes `boot` and `userdata`. vendor.img and the GSI are inside the
+rootfs, so `system` and `cust` are not touched, and the initramfs grows userdata on first boot. Flashing wipes
+userdata. This is the route to use.
+
+`luneos-dev-package` (TWRP zip) failed on the first try, formatted /data, by sideload: `tar: unexpected end of
+file`, `tar: short read`, a truncated tarball on /data. The cause was not established: the zip's tarball passes
+`gzip -t` on the host, and its script checks neither the mount nor the copy. It also goes on to flash boot after
+a failed unpack, and still reports success.
 
 ## Open
 
