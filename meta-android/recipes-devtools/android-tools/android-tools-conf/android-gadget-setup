@@ -276,11 +276,20 @@ fi
 
 # Bind the UDC for any configuration containing adb, now that FunctionFS is
 # mounted. adbd still has to open ep0 and write the descriptors before the bind
-# can succeed, so give it a moment - the caller (luneos-usb-setup.sh on radon)
-# starts adbd and waits for ep1 before re-binding deterministically, which is
-# the reliable form. This deferred write keeps the standalone
-# "android-gadget-setup adb" path working as it always did.
-if echo $USB_FUNCTIONS | grep -q "adb"; then
-    (usleep 1000000; write $GADGET_DIR/g1/UDC "$(first_real_udc)") &
+# can succeed, and ep1 appears once it has. Wait for that, and keep at it until
+# the bind holds: adbd gives up on an unbound gadget after a second, closes ep0
+# and starts over, so ep1 comes and goes. One write after a fixed delay lost
+# this race on a Pixel 3a at boot ("failed to start g1: -19") and nothing ever
+# tried again, which left no USB at all. luneos-usb-setup.sh on radon does its
+# own bind; a bound gadget ends this loop.
+if echo $USB_FUNCTIONS | grep -q "adb" && [ -e $GADGET_DIR/g1/UDC ]; then
+    (
+        _tries=300
+        while [ $_tries -gt 0 ] && [ -z "$(cat $GADGET_DIR/g1/UDC)" ]; do
+            [ -e /dev/usb-ffs/adb/ep1 ] && write $GADGET_DIR/g1/UDC "$(first_real_udc)"
+            usleep 100000
+            _tries=$((_tries - 1))
+        done
+    ) &
 fi
 
