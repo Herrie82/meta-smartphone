@@ -194,6 +194,22 @@ first_real_udc() {
 }
 
 # This sets up the USB with whatever USB_FUNCTIONS are set to via android_usb
+# Called by android-gadget-rebind after a cable unplug: see that script. The UDC
+# wait is the one at the end of this file, without building anything. The MTP
+# helper unbinds on purpose while it reconfigures, so stay out of its way.
+if [ "$USB_FUNCTIONS" = "rebind" ]; then
+    _udc=/sys/kernel/config/usb_gadget/g1/UDC
+    [ -e /run/luneos-mtp/reconfiguring ] && exit 0
+    [ -e "$_udc" ] || exit 0
+    _tries=30
+    while [ $_tries -gt 0 ] && [ -z "$(cat "$_udc")" ]; do
+        [ -e /dev/usb-ffs/adb/ep1 ] && write "$_udc" "$(first_real_udc)"
+        usleep 100000
+        _tries=$((_tries - 1))
+    done
+    exit 0
+fi
+
 ANDROID_USB=/sys/class/android_usb/android0
 usb_setup_android_usb() {
     write $ANDROID_USB/enable          0
