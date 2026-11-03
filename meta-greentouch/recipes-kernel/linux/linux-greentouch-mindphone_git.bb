@@ -57,7 +57,12 @@ do_configure:prepend() {
 # white at screen-off, with brightness inverted, until the next reboot.
 # Revert "video: mt6739: resume display in mtkfb_open when slept" - it left the
 # panel asleep behind a lit backlight after every screen-on.
-SRCREV = "88bac7c802c3be9fd69432513b9ce3f29a0f13e3"
+# "ASoC: mt6357: start the left headphone gain at 0 dB too" - headphones ran at
+# +8 dB until something set a gain, which on Halium nothing does.
+# "mtk_power_misc: ignore the UI SOC 1% shutdown when the gauge disagrees" -
+# fuelgauged restored a UI SOC of 0 from the RTC and the kernel powered the
+# phone off at 1% with the battery at 4.0 V and the gauge at 72%.
+SRCREV = "98ab67815c913626bd878333019c10029f2c587a"
 
 KV = "4.14.186"
 PV = "${KV}+git"
