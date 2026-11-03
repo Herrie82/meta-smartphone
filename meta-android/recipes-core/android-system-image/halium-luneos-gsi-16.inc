@@ -37,6 +37,11 @@
 #
 # (they live in /system_ext/apex, not /system/apex).
 
+# 20261103-1 adds the Widevine bridge's Android half (wvbridged, wvlaunch and
+# libwvshim.so in /system, webOS-ports/luneos-widevine-bridge) and the
+# linkerconfig link that lets the vendor's Widevine HAL load libwvshim.so. None
+# of it runs unless the bridge is turned on in LuneOS. Same content as
+# 20261017-1 otherwise.
 # 20261017-1 carries droidmedia's buffer and codec fixes (herrie/video-playback:
 # the consumer may hold 8 buffers, not 4, which a decoder with a long output delay
 # needs to keep up; a codec that was never created is not released).
@@ -48,8 +53,8 @@
 # built and fsck'd clean. Same content as 20261007-1 otherwise.
 # 20261007-1 added the /persist and /efs directories and the /firmware link that
 # halium_arm got on 5 Oct 2026, for pre-Treble arm64 vendors (bullhead).
-HALIUM_LUNEOS_GSI16_PV ?= "20261017-1"
-HALIUM_LUNEOS_GSI16_SHA256 ?= "dc789b56a4709ae3081473fc5e897aa3bf9d919b73e12ad7c64288386104dd45"
+HALIUM_LUNEOS_GSI16_PV ?= "20261103-1"
+HALIUM_LUNEOS_GSI16_SHA256 ?= "1bbb580a09dd3428ea065e76300fa7944a5030cae2951c9e26d840eb2901f442"
 
 # 32-bit ports (mindphone) set this to halium_arm and bring their own PV/SHA -
 # the arm GSI is a separate build and is not published on the same cadence.
