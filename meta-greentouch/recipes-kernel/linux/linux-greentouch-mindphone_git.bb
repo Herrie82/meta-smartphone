@@ -53,7 +53,16 @@ do_configure:prepend() {
 # "fork: CLONE_PIDFD: do not require a zeroed *parent_tidptr" - without it the
 # Sep 25 waitid(P_PIDFD) backport makes Qt's QProcess::startDetached() fail with
 # EINVAL, so the compositor never reports ready and restarts every 90 s.
-SRCREV = "06873421d3907d19e3629f17c81a5fed068c0d42"
+# "video: pwm10: clear stray CON_0 bits on mt6739" - the backlight turned full
+# white at screen-off, with brightness inverted, until the next reboot.
+# Revert "video: mt6739: resume display in mtkfb_open when slept" - it left the
+# panel asleep behind a lit backlight after every screen-on.
+# "ASoC: mt6357: start the left headphone gain at 0 dB too" - headphones ran at
+# +8 dB until something set a gain, which on Halium nothing does.
+# "mtk_power_misc: ignore the UI SOC 1% shutdown when the gauge disagrees" -
+# fuelgauged restored a UI SOC of 0 from the RTC and the kernel powered the
+# phone off at 1% with the battery at 4.0 V and the gauge at 72%.
+SRCREV = "98ab67815c913626bd878333019c10029f2c587a"
 
 KV = "4.14.186"
 PV = "${KV}+git"
