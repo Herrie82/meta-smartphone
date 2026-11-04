@@ -12,9 +12,12 @@ COMPATIBLE_MACHINE = "mindphone"
 # created: with no media.resource_manager under Halium on Android 16, MediaCodec
 # refuses every codec, and every AAC file then crashed the player in
 # MediaCodec::release().
+# 20261104-1 adds droidmedia's decoder fixes (see halium-luneos-gsi-16.inc) and
+# the Widevine linkerconfig link, which has nothing to load here: the bridge is
+# 64-bit only.
 HALIUM_LUNEOS_GSI16_ARCH = "halium_arm"
-HALIUM_LUNEOS_GSI16_PV = "20261017-1"
-HALIUM_LUNEOS_GSI16_SHA256 = "0984f47ea33ca7e058a4db7e9e5145760d5b433b19e14e8ba22a38d12648a871"
+HALIUM_LUNEOS_GSI16_PV = "20261104-1"
+HALIUM_LUNEOS_GSI16_SHA256 = "79a367f8cf997dfe0f05a9d6cae847a7e3d4e64aaf53cc6b7880a73f069c8c98"
 
 PV = "${HALIUM_LUNEOS_GSI16_PV}"
 
