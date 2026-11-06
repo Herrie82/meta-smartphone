@@ -62,7 +62,13 @@ do_configure:prepend() {
 # "mtk_power_misc: ignore the UI SOC 1% shutdown when the gauge disagrees" -
 # fuelgauged restored a UI SOC of 0 from the RTC and the kernel powered the
 # phone off at 1% with the battery at 4.0 V and the gauge at 72%.
-SRCREV = "98ab67815c913626bd878333019c10029f2c587a"
+# "mediatek: connectivity: import fmradio driver" and "... build fmradio
+# in-tree as a module" - the vendor fmradio_drv.ko was built without
+# CGROUP_WRITEBACK, read inode->i_cdev 16 bytes early and oopsed the phone on
+# the first open of /dev/fm. MediaTek's GPL source (Motorola android-11
+# release) now builds as kernel-module-fmradio-drv, which mtk-load-modules.sh
+# prefers over the vendor copy.
+SRCREV = "b4562028af68a571567ede77e545a466ccb5e274"
 
 KV = "4.14.186"
 PV = "${KV}+git"
