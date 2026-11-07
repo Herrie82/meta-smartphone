@@ -15,9 +15,11 @@ COMPATIBLE_MACHINE = "mindphone"
 # 20261104-1 adds droidmedia's decoder fixes (see halium-luneos-gsi-16.inc) and
 # the Widevine linkerconfig link, which has nothing to load here: the bridge is
 # 64-bit only.
+# 20261107-1 changes only droidmedia (libdroidmedia.so, minimediaservice) and
+# build.prop's dates against 20261104-1.
 HALIUM_LUNEOS_GSI16_ARCH = "halium_arm"
-HALIUM_LUNEOS_GSI16_PV = "20261104-1"
-HALIUM_LUNEOS_GSI16_SHA256 = "79a367f8cf997dfe0f05a9d6cae847a7e3d4e64aaf53cc6b7880a73f069c8c98"
+HALIUM_LUNEOS_GSI16_PV = "20261107-1"
+HALIUM_LUNEOS_GSI16_SHA256 = "0c15a001e0481c7a2aa08f1c2a3631f7aef07e65f4abaf3526c5dd1119973a80"
 
 PV = "${HALIUM_LUNEOS_GSI16_PV}"
 

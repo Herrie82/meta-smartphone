@@ -37,6 +37,9 @@
 #
 # (they live in /system_ext/apex, not /system/apex).
 
+# 20261107-2 (halium_arm64; halium_arm is 20261107-1) differs from 20261104-1
+# only in droidmedia: /system/lib{,64}/libdroidmedia.so, /system/bin/minimediaservice
+# and build.prop's dates. It still carries com.android.vndk.v27 to v34.
 # 20261104-1 carries droidmedia's decoder fixes (herrie/video-playback): a codec
 # that fails wakes the reader waiting for its output instead of leaving it
 # waiting for ever, the reader thread is stopped before its source is freed, an
@@ -59,8 +62,8 @@
 # built and fsck'd clean. Same content as 20261007-1 otherwise.
 # 20261007-1 added the /persist and /efs directories and the /firmware link that
 # halium_arm got on 5 Oct 2026, for pre-Treble arm64 vendors (bullhead).
-HALIUM_LUNEOS_GSI16_PV ?= "20261104-1"
-HALIUM_LUNEOS_GSI16_SHA256 ?= "9454704e72e24759cc90b38a8f9390a02a579826252508ffde2cc61ef4c13d44"
+HALIUM_LUNEOS_GSI16_PV ?= "20261107-2"
+HALIUM_LUNEOS_GSI16_SHA256 ?= "0a0100bb06d5ec3bf291d850493580737188025aee51775045eec5fd317f207c"
 
 # 32-bit ports (mindphone) set this to halium_arm and bring their own PV/SHA -
 # the arm GSI is a separate build and is not published on the same cadence.
