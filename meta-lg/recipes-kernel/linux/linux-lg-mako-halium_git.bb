@@ -22,13 +22,13 @@ inherit kernel_android
 # moves the unpacked tree there when the recipe points S somewhere else.
 S = "${UNPACKDIR}/${BP}"
 
-SRC_URI = "git://github.com/shr-distribution/linux.git;branch=herrie/mako-gsi-bt2;protocol=https"
+SRC_URI = "git://github.com/shr-distribution/linux.git;branch=mako/3.4/halium-9.0;protocol=https"
 
 do_configure:prepend() {
     cp -v -f ${S}/arch/arm/configs/lineageos_mako_defconfig ${WORKDIR}/defconfig
 }
 
-SRCREV = "b47e08c3952c5908131a77e56197adf6221d991d"
+SRCREV = "f61cfd15f9eb2c5c35cb32709567a90be2925563"
 
 # The 64-bit time clock calls (see halium-kernel-3.4.inc).
 KERNEL_ADD_CLOCK_TIME64 = "1"
