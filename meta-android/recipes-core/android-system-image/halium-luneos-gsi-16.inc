@@ -37,6 +37,12 @@
 #
 # (they live in /system_ext/apex, not /system/apex).
 
+# 20261108-1 (halium_arm64 and halium_arm) differs from 20261107-2 in linkerconfig,
+# which reads a vendor binary's target SDK from a .version file next to it
+# (enable.target.sdk.version in the vendor section), in CameraClient, which hands HAL1
+# recording frames back to the HAL off its callback thread, and in init.halium.rc,
+# which preloads libselinux_stubs.so for vndservicemanager by soname again (20261107-2
+# was built with the /system/lib64 path). It still carries com.android.vndk.v27 to v34.
 # 20261107-2 (halium_arm64; halium_arm is 20261107-1) differs from 20261104-1
 # only in droidmedia: /system/lib{,64}/libdroidmedia.so, /system/bin/minimediaservice
 # and build.prop's dates. It still carries com.android.vndk.v27 to v34.
@@ -62,8 +68,8 @@
 # built and fsck'd clean. Same content as 20261007-1 otherwise.
 # 20261007-1 added the /persist and /efs directories and the /firmware link that
 # halium_arm got on 5 Oct 2026, for pre-Treble arm64 vendors (bullhead).
-HALIUM_LUNEOS_GSI16_PV ?= "20261107-2"
-HALIUM_LUNEOS_GSI16_SHA256 ?= "0a0100bb06d5ec3bf291d850493580737188025aee51775045eec5fd317f207c"
+HALIUM_LUNEOS_GSI16_PV ?= "20261108-1"
+HALIUM_LUNEOS_GSI16_SHA256 ?= "5d913d3e35f4a405bcfc36b91ca356b8837216269c06c43e3ed7be101f8cda00"
 
 # 32-bit ports (mindphone) set this to halium_arm and bring their own PV/SHA -
 # the arm GSI is a separate build and is not published on the same cadence.
