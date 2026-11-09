@@ -1,0 +1,51 @@
+# Tier 1 adaptation for the Motorola moto g06 (lagos; MT6768, 6.88" 720x1640).
+#
+# Only what cannot be derived belongs here. Vendor API level, panel geometry
+# and the touchscreen node derive on a Treble device. Values are read from the
+# stock firmware (VVOB35.78-188) unless marked UNVERIFIED; nothing here has
+# been checked on hardware yet.
+
+# The power key and the volume rocker, pinned by name, never by node number
+# (numbering depends on probe order across ~360 vendor modules). Both strings
+# are in the stock modules: mtk-pmic-keys.ko ("mtk-pmic-keys", the PMIC power
+# key) and mtk-kpd.ko ("mtk-kpd", the keypad the volume rocker hangs off).
+# UNVERIFIED that "mtk-kpd" is the input device's name rather than only the
+# driver's; if the journal logs that it did not resolve, read the real one
+# with  grep -h '^N: Name' /proc/bus/input/devices  and correct it here.
+deviceinfo_key_devices_by_name="mtk-pmic-keys;mtk-kpd"
+
+# 6.88" diagonal, 720x1640: sqrt(720^2 + 1640^2) / 6.88 = 260 ppi. Android
+# ships ro.sf.lcd_density=280. UNVERIFIED ON HARDWARE.
+deviceinfo_display_dpi="260"
+
+# 720 / 1.6 = 450 CSS px, the canvas width the webOS apps target (sargo:
+# 1080 / 2.4). Expect to re-tune on the device.
+deviceinfo_device_pixel_ratio="1.6"
+
+# --- MediaTek vendor userspace --------------------------------------------
+# Carried over from the other MediaTek ports (MP01, Q25, radon), where each was
+# established. Recorded with what it is for, so a reader can tell whether it
+# still applies.
+
+# Qt's hwcomposer QPA backend. ro.hardware.hwcomposer=mtk_common here as on the
+# MP01, where the compositor otherwise spun trying to become DRM master. The
+# vendor's composer HAL is AIDL composer3, but /vendor/lib64/hw still ships the
+# legacy hwcomposer.mt6768.so.
+deviceinfo_force_hwc2="1"
+
+# MediaTek's audio HAL (audio.primary.mt6768.so, loaded into pulseaudio by
+# module-droid) runs its paths at 48 kHz.
+deviceinfo_audio_sample_rate="48000"
+
+# NOT carried:
+#
+#   deviceinfo_hybris_prefer_vndk
+#       An Android 12 (VNDK 31) vendor fix: its libnvram imported a libbase
+#       symbol the 16 GSI dropped. This vendor is Android 15 and ships its own
+#       /vendor/lib64/libbase.so.
+#
+#   deviceinfo_bluebinder_ext_features_page_2_mask
+#       Measured on MT6789 (MP01, Q25). This is connac1x Bluetooth too
+#       (ro.vendor.bt.platform=connac1x, bt_drv_connac1x.ko), so it is the
+#       first thing to try if hci0 never comes up:
+#       deviceinfo_bluebinder_ext_features_page_2_mask="0x0400000000000000"
