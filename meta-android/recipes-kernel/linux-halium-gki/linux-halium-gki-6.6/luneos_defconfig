@@ -77,8 +77,37 @@ CONFIG_UEVENT_HELPER_PATH=""
 # (kmi-crc-matching.md "MODULE_SIG_PROTECT"). MODULE_SIG/MODULE_SIG_ALL stay.
 # CONFIG_MODULE_SIG_PROTECT is not set
 
-# Virtual HCI for bluebinder. =m because CONFIG_BT is =m.
-CONFIG_BT_HCIVHCI=m
+# Built in, not modules: rfkill, the Bluetooth core with the virtual HCI, and
+# USB CDC Ethernet.
+#
+# This recipe builds modules but ships none of them. Stock has these as =m and
+# the only .ko for them is Google's in system_dlkm, which nothing on LuneOS
+# loads (the vendor_dlkm loaders read vendor_dlkm only). Measured on the first
+# lagos boot (tester log 2026-11-10):
+#   - vendor_dlkm's cfg80211.ko depends on rfkill, so it never loaded, and with
+#     it neither did wlan_drv_gen4m_6768.ko: "null pointer mtk_wcn_wlan_probe",
+#     "WMT turn on WIFI fail!", no wlan0 and no /dev/rfkill.
+#   - stock system_dlkm has no hci_vhci.ko at all, and the =m we set here
+#     never reached the phone, so there was no /dev/vhci and bluebinder failed.
+#   - webos-connman-adapter.sh runs "modprobe cdc_ether" whenever /proc/config.gz
+#     says =m. The module is not in /lib/modules, so its ExecStartPost failed
+#     and the connection manager restarted every 5 s (247 times in 24 min).
+#     Built in, the script exits early and USB Ethernet works.
+# Of the 596 stock modules (vendor_boot, vendor_dlkm, odm_dlkm, system_dlkm),
+# the only vendor module that depends on any of these is cfg80211 (on rfkill);
+# every other dependent is one of Google's own system_dlkm modules, which a
+# built-in copy now supersedes. BT=y needs RFKILL=y; RFCOMM and HIDP follow BT so BlueZ keeps
+# serial/HFP and HID profiles. USB_NET_DRIVERS is the tristate menu over
+# USBNET; the other USB NIC drivers stay =m (and unshipped) as in stock.
+CONFIG_RFKILL=y
+CONFIG_BT=y
+CONFIG_BT_RFCOMM=y
+CONFIG_BT_HIDP=y
+CONFIG_BT_HCIVHCI=y
+CONFIG_MII=y
+CONFIG_USB_NET_DRIVERS=y
+CONFIG_USB_USBNET=y
+CONFIG_USB_NET_CDCETHER=y
 
 # Uncompressed DWARF. Stock compresses it with zstd, which the pahole in
 # GKI_BUILD_TOOLS_DIR (1.23) and OE's pahole-native (1.31, through
