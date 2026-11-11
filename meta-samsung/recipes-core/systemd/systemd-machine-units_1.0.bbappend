@@ -107,3 +107,17 @@ do_install:append:a3-2015-halium() {
 
 FILES:${PN}:append:a3-2015-halium = " ${systemd_unitdir}/system/a3-prima-wlan.service"
 SYSTEMD_SERVICE:${PN}:append:a3-2015-halium = " a3-prima-wlan.service"
+
+# Galaxy Grand Prime 3G: the same built-in prima driver (CONFIG_PRONTO_WLAN=y in msm8916_sec_defconfig) and
+# WCNSS node (msm8916.dtsi's a000000.qcom,wcnss-wlan) as the A3, so the same unit starts it.
+S:fortuna3g-halium = "${UNPACKDIR}"
+
+SRC_URI:append:fortuna3g-halium = " file://a3-prima-wlan.service"
+
+do_install:append:fortuna3g-halium() {
+    install -d ${D}${systemd_unitdir}/system
+    install -m 0644 ${UNPACKDIR}/a3-prima-wlan.service ${D}${systemd_unitdir}/system
+}
+
+FILES:${PN}:append:fortuna3g-halium = " ${systemd_unitdir}/system/a3-prima-wlan.service"
+SYSTEMD_SERVICE:${PN}:append:fortuna3g-halium = " a3-prima-wlan.service"

@@ -18,7 +18,7 @@
 # so "gta7litewifi" is the first property it reads and resolves directly.
 FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"
 
-SRC_URI += "file://gta7litewifi-deviceinfo file://n2awifi-deviceinfo file://a3lte-deviceinfo file://goyavewifi-deviceinfo"
+SRC_URI += "file://gta7litewifi-deviceinfo file://n2awifi-deviceinfo file://a3lte-deviceinfo file://goyavewifi-deviceinfo file://fortuna3g-deviceinfo"
 
 do_install:append() {
     install -d ${D}${datadir}/luneos/adaptations/gta7litewifi
@@ -35,4 +35,8 @@ do_install:append() {
     install -d ${D}${datadir}/luneos/adaptations/goyavewifi
     install -m 0644 ${UNPACKDIR}/goyavewifi-deviceinfo \
         ${D}${datadir}/luneos/adaptations/goyavewifi/deviceinfo
+    # fortuna3g-halium: the vendor reports fortuna3g (ro.product.vendor.device); see the file.
+    install -d ${D}${datadir}/luneos/adaptations/fortuna3g
+    install -m 0644 ${UNPACKDIR}/fortuna3g-deviceinfo \
+        ${D}${datadir}/luneos/adaptations/fortuna3g/deviceinfo
 }

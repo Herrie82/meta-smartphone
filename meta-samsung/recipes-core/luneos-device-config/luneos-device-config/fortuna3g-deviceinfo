@@ -1,0 +1,31 @@
+# Tier 1 adaptation for the Samsung Galaxy Grand Prime 3G (SM-G530H) on Halium (machine fortuna3g-halium:
+# the LineageOS 18.1 vendor of the fortuna-for-smoothie fortuna3g trees with the 16.0 GSI). Nothing here
+# has been run on hardware; it follows a3-2015-halium, the same SoC with the same kind of vendor.
+#
+# The directory name is the codename luneos-device-config reads from ro.product.vendor.device, which the
+# vendor build.prop of that build sets to fortuna3g (PRODUCT_DEVICE in lineage_fortuna3g.mk). The
+# per-model values LineageOS sets from ro.bootloader come from libinit_gprimelte, which is linked into
+# its own /system/bin/init and so does not run under the GSI.
+
+# Physical density of the 5" 540x960 panel (62 x 110 mm in the device tree), as in fortuna3g-halium.conf
+# (MACHINE_DISPLAY_PPI).
+deviceinfo_display_dpi="222"
+
+# The GPU is an Adreno 306; host-side setting, as on a3-2015-halium.
+deviceinfo_hardware_egl="adreno"
+
+# Do not let the compositor open the hwcomposer HAL a second time; the Android composer service in the
+# container already has it. As on a3-2015-halium and sm-t520. UNVERIFIED on this phone.
+deviceinfo_force_hwc2="1"
+
+# As on a3-2015-halium, whose vendor has the same WCNSS arrangement: the vendor Wi-Fi HAL would start the
+# vendor wpa_supplicant and take wlan0 from connman, and a force-started hciattach powers WCNSS through the
+# Bluetooth path before wcnss_service has, which broke both Wi-Fi and Bluetooth on the A3. UNVERIFIED on
+# this phone.
+deviceinfo_android_skip_services="vendor.wifi_hal_legacy vendor.hciattach"
+
+# The pack's rating, from gprimelte-common's power_profile.xml (battery.capacity 2600). The fuel gauge is
+# the rt5033 of the A3 (CONFIG_FUELGAUGE_RT5033), which there reported no capacity of its own; see
+# a3lte-deviceinfo.
+deviceinfo_battery_full_capacity_mah="2600"
+deviceinfo_battery_design_capacity_mah="2600"

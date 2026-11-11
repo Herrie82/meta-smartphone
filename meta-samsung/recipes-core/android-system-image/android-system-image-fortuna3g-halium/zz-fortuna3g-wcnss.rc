@@ -1,0 +1,10 @@
+# wcnss_service hands the WCNSS firmware its NV data and the Wi-Fi MAC from EFS. fortuna3g's
+# msm8916-common builds it into /system/bin (vlw's a3lte tree puts it in /system/vendor/bin), which the GSI
+# replaces, so the recipe copies it into the vendor image and this points the vendor's service at that
+# copy. Same definition as init.qcom.rc's otherwise; "zz-" sorts it after that file.
+service wcnss-service /vendor/bin/wcnss_service
+    override
+    class main
+    user system
+    group system wifi radio
+    oneshot
