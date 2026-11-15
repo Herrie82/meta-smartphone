@@ -12,6 +12,7 @@ S:tissot-halium = "${UNPACKDIR}"
 S:vince-halium = "${UNPACKDIR}"
 
 SRC_URI:append:mido-halium = " \
+    file://droid-get-bt-address.sh \
     file://wifi-macaddr-persister.service \
     file://wifi-module-load.service \
     file://persist-wifi-mac-addr.sh \
@@ -49,6 +50,7 @@ SRC_URI:append:tissot-halium = " \
 "
 
 SRC_URI:append:vince-halium = " \
+    file://droid-get-bt-address.sh \
     file://wifi-macaddr-persister.service \
     file://wifi-module-load.service \
     file://persist-wifi-mac-addr.sh \
@@ -72,6 +74,10 @@ do_install:append:mido-halium() {
     install -m 0755 ${UNPACKDIR}/persist-wifi-mac-addr.sh ${D}${bindir}
     install -m 0755 ${UNPACKDIR}/hciattach.sh ${D}${bindir}
     install -m 0755 ${UNPACKDIR}/fingerprint-hal-fixup.sh ${D}${bindir}
+
+    # The hook bluebinder_post.sh runs before it looks for an address itself.
+    install -d ${D}${bindir}/droid
+    install -m 0755 ${UNPACKDIR}/droid-get-bt-address.sh ${D}${bindir}/droid
 }
 
 do_install:append:oxygen() {
@@ -125,6 +131,10 @@ do_install:append:vince-halium() {
     install -d ${D}${bindir}
     install -m 0755 ${UNPACKDIR}/persist-wifi-mac-addr.sh ${D}${bindir}
     install -m 0755 ${UNPACKDIR}/fingerprint-hal-fixup.sh ${D}${bindir}
+
+    # The hook bluebinder_post.sh runs before it looks for an address itself.
+    install -d ${D}${bindir}/droid
+    install -m 0755 ${UNPACKDIR}/droid-get-bt-address.sh ${D}${bindir}/droid
 }
 
 SYSTEMD_SERVICE:${PN}:mido-halium = " \
@@ -161,5 +171,6 @@ SYSTEMD_SERVICE:${PN}:vince-halium = " \
 # The base recipe's FILES only covers unit files directly under
 # ${systemd_unitdir}/system, so the drop-in directory would be installed but
 # unpackaged, which is a fatal QA error.
-FILES:${PN}:append:mido-halium = " ${systemd_unitdir}/system/pulseaudio.service.d"
+FILES:${PN}:append:mido-halium = " ${systemd_unitdir}/system/pulseaudio.service.d ${bindir}/droid"
 FILES:${PN}:append:tissot-halium = " ${systemd_unitdir}/system/pulseaudio.service.d ${bindir}/droid"
+FILES:${PN}:append:vince-halium = " ${bindir}/droid"
