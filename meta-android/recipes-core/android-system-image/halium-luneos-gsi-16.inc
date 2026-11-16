@@ -40,7 +40,7 @@
 
 # 20261116-1 (halium_arm64 and halium_arm) is the first version every device shares,
 # 32-bit and legacy ports included. It differs from 20261108-1 in these files (and, on
-# halium_arm, build.prop's dates): libsysutils.so (32- and 64-bit), whose NetlinkListener now skips
+# build.prop's dates: libsysutils.so (32- and 64-bit), whose NetlinkListener now skips
 # uevent messages that did not come from the kernel instead of logging
 # "recvmsg failed (I/O error)" for every udev event (hybris-patches system/core 0027),
 # libdroidmedia.so (32- and 64-bit; AndroidOpaque input for Exynos encoders) and
@@ -78,7 +78,7 @@
 # 20261007-1 added the /persist and /efs directories and the /firmware link that
 # halium_arm got on 5 Oct 2026, for pre-Treble arm64 vendors (bullhead).
 HALIUM_LUNEOS_GSI16_PV ?= "20261116-1"
-HALIUM_LUNEOS_GSI16_SHA256_halium_arm64 ?= "9eefc22444514d6b2788d068d840463a9f257e76c809552af7ee07df1a7d5b7a"
+HALIUM_LUNEOS_GSI16_SHA256_halium_arm64 ?= "65763124ec691ebb110f505a83f87d6f258b818c3b4087c4f392dfdebbcad9c2"
 HALIUM_LUNEOS_GSI16_SHA256_halium_arm ?= "59d6146aa2eb639e3e633303d349f5d55a8c5e1fc3766f5234bb9e145314780d"
 
 # 32-bit ports (mindphone, the legacy devices) set this to halium_arm. They share the
