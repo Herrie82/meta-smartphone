@@ -585,8 +585,12 @@ panic() {
 
     usleep 500000
 
-    # adbd has to be started before gadget is configured
-    /usr/bin/adbd &
+    # adbd has to be started before gadget is configured. adbd-initramfs
+    # (android-tools-adbd-initramfs) lets any host in: the rootfs's adbd asks
+    # the developer mode service, which does not run here, so it would let
+    # nobody in. Machines without room for it (ANDROID_INITRAMFS_DEBUG_ADBD)
+    # do not have it.
+    [ -x /usr/bin/adbd-initramfs ] && /usr/bin/adbd-initramfs &
 
     usleep 500000
 
