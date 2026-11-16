@@ -48,6 +48,7 @@ SRC_URI = "\
     file://0002-bbqX0kbd-sym-tap-emoji-key.patch \
     file://0003-bbqX0kbd-blackberry-key-as-ctrl.patch \
     file://0004-mali-r32p1-find-the-context-s-task-without-a-pid-nam.patch \
+    file://0005-Bluetooth-hci_vhci-do-not-let-the-core-suspend-a-vhc.patch \
     file://luneos.cfg;subdir=frag \
 "
 SRCREV_kernel = "2a873a3511ee0eeead1442e60145093192a4535d"
