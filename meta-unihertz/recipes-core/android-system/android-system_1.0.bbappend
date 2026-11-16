@@ -1,8 +1,8 @@
 FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"
 
-PR:append:halium-arm64 = ".2"
-PR:append:titan = ".1"
-PR:append:titanpocket = ".1"
+PR:append:halium-arm64 = ".3"
+PR:append:titan = ".2"
+PR:append:titanpocket = ".2"
 PR:append:titanslim = ".1"
 
 # Init scripts for the Titan Pocket's, the Titan Slim's and the Titan's containers, under the
@@ -19,9 +19,14 @@ PR:append:titanslim = ".1"
 # teed, biomd timed out on every start and fingerprint was dead - the very thing
 # trustkernel-unencrypted-titan.rc fixed - and the configstore HAL crash-looped again.
 #
+# The health HAL overrides take its wake alarm away on the Titan and the Pocket, whose vendor rc files
+# they copy. The Slim gets none: its vendor rc has not been read, and an override has to match the
+# vendor's service name and binary.
+#
 # PACKAGE_ARCH is already MACHINE_ARCH, so only these machines' packages change.
 UNIHERTZ_EXTRA_INIT_SRC = " file://trustkernel-unencrypted.rc file://trustkernel-unencrypted-titan.rc \
-    file://vendor-configstore-off-titan.rc"
+    file://vendor-configstore-off-titan.rc file://health-no-wake-alarm-titan.rc \
+    file://health-no-wake-alarm-pocket.rc"
 SRC_URI:append:halium-arm64 = "${UNIHERTZ_EXTRA_INIT_SRC}"
 SRC_URI:append:titan = "${UNIHERTZ_EXTRA_INIT_SRC}"
 SRC_URI:append:titanpocket = "${UNIHERTZ_EXTRA_INIT_SRC}"
@@ -31,6 +36,8 @@ unihertz_install_extra_init() {
     install -d ${D}${localstatedir}/lib/lxc/android/extra-init.d/Titan_pocket
     install -m 0644 ${UNPACKDIR}/trustkernel-unencrypted.rc \
         ${D}${localstatedir}/lib/lxc/android/extra-init.d/Titan_pocket/
+    install -m 0644 ${UNPACKDIR}/health-no-wake-alarm-pocket.rc \
+        ${D}${localstatedir}/lib/lxc/android/extra-init.d/Titan_pocket/health-no-wake-alarm.rc
     install -d ${D}${localstatedir}/lib/lxc/android/extra-init.d/Titan_Slim
     install -m 0644 ${UNPACKDIR}/trustkernel-unencrypted.rc \
         ${D}${localstatedir}/lib/lxc/android/extra-init.d/Titan_Slim/
@@ -39,6 +46,8 @@ unihertz_install_extra_init() {
         ${D}${localstatedir}/lib/lxc/android/extra-init.d/Titan/trustkernel-unencrypted.rc
     install -m 0644 ${UNPACKDIR}/vendor-configstore-off-titan.rc \
         ${D}${localstatedir}/lib/lxc/android/extra-init.d/Titan/vendor-configstore-off.rc
+    install -m 0644 ${UNPACKDIR}/health-no-wake-alarm-titan.rc \
+        ${D}${localstatedir}/lib/lxc/android/extra-init.d/Titan/health-no-wake-alarm.rc
 }
 
 do_install:append:halium-arm64() {

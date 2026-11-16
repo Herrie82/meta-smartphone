@@ -1,6 +1,7 @@
 FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"
 
-PR:append:mp01 = ".1"
+PR:append:halium-arm64 = ".1"
+PR:append:mp01 = ".2"
 
 # mp01's stub list, under the per-codename directory 50-stub-services looks
 # in. The phone runs either the generic halium-arm64 rootfs or an image built
@@ -16,10 +17,17 @@ PR:append:mp01 = ".1"
 SRC_URI:append:halium-arm64 = " file://stubbed-services-mp01"
 SRC_URI:append:mp01 = " file://stubbed-services-mp01"
 
+# The health HAL without its 10-minute wake alarm, for 65-extra-init (see the file itself).
+SRC_URI:append:halium-arm64 = " file://health-no-wake-alarm-mp01.rc"
+SRC_URI:append:mp01 = " file://health-no-wake-alarm-mp01.rc"
+
 minimal_install_stubs() {
     install -d ${D}${localstatedir}/lib/lxc/android/stubbed-services.d
     install -m 0644 ${UNPACKDIR}/stubbed-services-mp01 \
         ${D}${localstatedir}/lib/lxc/android/stubbed-services.d/MP01
+    install -d ${D}${localstatedir}/lib/lxc/android/extra-init.d/MP01
+    install -m 0644 ${UNPACKDIR}/health-no-wake-alarm-mp01.rc \
+        ${D}${localstatedir}/lib/lxc/android/extra-init.d/MP01/health-no-wake-alarm.rc
 }
 
 do_install:append:halium-arm64() {
