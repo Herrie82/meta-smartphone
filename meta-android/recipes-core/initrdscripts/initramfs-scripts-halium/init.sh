@@ -1028,24 +1028,47 @@ rootmnt=/rfs
 mkdir -m 0755 /proc
 mount -t proc proc /proc
 
-# Recovery on a device whose recovery lives in vendor_boot (Android 12+ GKI:
-# boot holds the kernel, init_boot the generic ramdisk, vendor_boot the vendor
-# ramdisk with recovery in it). The bootloader merges the vendor ramdisk under
-# ours, so the vendor's recovery - /system/bin/recovery, init.recovery.*.rc and
-# Android's init - is in our root on every boot. A normal boot carries
-# androidboot.force_normal_boot=1 (bootconfig, or the cmdline on Android 10 and
-# 11); a recovery boot leaves it out, and Android's first-stage init then starts
-# recovery from the ramdisk. Ours replaced that init, so do the same check here
-# and hand over to Android's. The skip_initramfs check further down is for
-# Android 9 devices, which keep recovery in /recovery and never get this far.
+# Recovery kept in the vendor ramdisk (GKI devices, GKI_BOOTIMG = "1")
+#
+# On a GKI device recovery is not a partition of its own. Stock Android puts
+# its resources - /system/bin/recovery, init.recovery.<hw>.rc, res/, minadbd,
+# fastbootd, the recovery HALs - into vendor_boot's ramdisk, and the bootloader
+# unpacks that ramdisk first and the generic one (init_boot, or boot on an
+# Android 12 launch device) on top of it. Android's first-stage init, from the
+# generic ramdisk, then chooses: a normal boot carries
+# androidboot.force_normal_boot=1 - in /proc/bootconfig from Android 12, on the
+# kernel cmdline before - and a recovery boot leaves it out. With the flag
+# missing and /system/bin/recovery present, init stays in the ramdisk and starts
+# recovery.
+#
+# LuneOS replaces the generic ramdisk with this one and leaves vendor_boot
+# stock, so the vendor's recovery is in our root on every boot, but the init
+# that would start it is gone: the recovery key combination booted LuneOS. So
+# make Android's decision here and hand over to the vendor's /system/bin/init,
+# which runs as first stage as well.
+#
+# It cannot misfire on a normal boot. Where the vendor ramdisk carries recovery,
+# stock Android relies on the same flag, so the bootloader always sets it on a
+# normal boot. Elsewhere there is no /system/bin/recovery in our root: on a
+# non-GKI device this ramdisk is the whole ramdisk, an Android 11 device keeps
+# recovery in boot's ramdisk (which ours replaced), and an Android 9 device
+# keeps it in /recovery (the skip_initramfs check further down).
+#
+# A kernel without CONFIG_BOOT_CONFIG has no /proc/bootconfig, and then a flag
+# passed there would look missing. So the bootloader's androidboot values have
+# to be visible at all - in bootconfig or on the cmdline - before their absence
+# counts; otherwise this boots LuneOS, as it did before.
+#
+# Tested on the BraX3 (MT6835, iodeOS vendor_boot): Volume Up + Power starts
+# iodeOS recovery, whose "Reboot system now" boots LuneOS again. Getting there
+# from LuneOS does not work yet: its bootloader ignores both boot-recovery in
+# misc and the kernel's reboot reason.
 android_recovery_requested() {
     [ -x /system/bin/recovery ] && [ -x /system/bin/init ] || return 1
     grep -qw skip_initramfs /proc/cmdline && return 1
     grep -qw androidboot.force_normal_boot=1 /proc/cmdline && return 1
-    # This is the decision Android's own first-stage init makes, so a
-    # bootloader whose vendor ramdisk carries recovery always sets the flag on
-    # a normal boot - otherwise the stock OS would boot into recovery too.
-    ! grep -q '^androidboot.force_normal_boot = "1"' /proc/bootconfig 2>/dev/null
+    grep -q '^androidboot.force_normal_boot = "1"' /proc/bootconfig 2>/dev/null && return 1
+    grep -q '^androidboot\.' /proc/bootconfig 2>/dev/null || grep -q 'androidboot\.' /proc/cmdline
 }
 
 if android_recovery_requested; then
@@ -1063,6 +1086,7 @@ if android_recovery_requested; then
     # start ueventd, and reboots after its fourth try. Recovery takes over the
     # whole ramdisk, so nothing of ours is needed past the exec. /bin goes last:
     # the commands before it come from our /bin.
+    # shellcheck disable=SC2114 # our initramfs /etc, replaced on purpose
     rm -rf /etc && ln -s /system/etc /etc
     [ -e /system/bin/toolbox ] && ln -sf toolbox /system/bin/modprobe
     ln -sfn /system/bin /bin
