@@ -292,6 +292,11 @@ SRC_URI = "git://github.com/furilabs/linux-furiphone-radon.git;branch=forky;prot
            file://0001-input-kpd_customkey-release-the-wakeup-source-uncondi.patch \
            file://0002-input-kpd_customkey-run-the-key-handler-in-a-thread.patch \
            file://0003-input-kpd_customkey-report-switch-state-at-probe.patch \
+           file://0004-scsi-core-sd-Add-silence_suspend-flag-to-suppress-so.patch \
+           file://0005-scsi-ufs-Fix-runtime-PM-messages-never-ending-cycle.patch \
+           file://0006-conninfra-do-not-report-suppressed-status-dumps.patch \
+           file://0007-iio-adc-mt635x-auxadc_v1-rate-limit-only-the-debug-m.patch \
+           file://0008-ipv6-register-the-optr-sysctl-in-the-initial-namespa.patch \
 "
 
 # Carried as a patch against FuriLabs' own branch rather than on a fork. The
@@ -328,6 +333,24 @@ SRC_URI = "git://github.com/furilabs/linux-furiphone-radon.git;branch=forky;prot
 # drivers are built in rather than force-loaded - see the CONFIG_MTK_COMBO note
 # in mtk-connectivity. Do not read this as licence to change config symbols,
 # which is where struct layouts and CRCs really do move.
+#
+# 0004-0008 are log noise that was also real work, each measured on radon:
+#
+#   0004  upstream af4edb1d50c6 and 71bb9ab6e351 (5.17, Cc: stable): the
+#   0005  rootfs LV sits on UFS LU sdc, which runtime-suspends 2 s after its
+#         last I/O and printed "Synchronizing SCSI cache" every time; journald
+#         wrote that line back to sdc, which woke it, which printed it again -
+#         about twelve times a minute for the whole uptime. silence_suspend
+#         breaks the cycle. 0004 adds a bit to struct scsi_device, so the CRCs
+#         of exported SCSI symbols do move; nothing on radon loads a prebuilt
+#         module (see above), and the modules ship with the kernel.
+#   0006  conninfra's opfunc_therm_ctrl and mt635x-auxadc_v1 ran a ratelimit
+#   0007  whose only job was to gate a pr_debug/dev_dbg, and __ratelimit()
+#         then logged "N callbacks suppressed" at KERN_WARNING about six times
+#         a minute each.
+#   0008  MediaTek's VzW change registered net/optr in every network namespace
+#         and never unregistered it: a leaked table and a retire_sysctl_set
+#         WARN on every namespace teardown (every PrivateNetwork= service).
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"
 

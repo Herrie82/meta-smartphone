@@ -1,0 +1,37 @@
+From: Herman van Hazendonk <github.com@herrie.org>
+Date: Tue, 17 Nov 2026 11:59:59 +0100
+Subject: [PATCH] conninfra: do not report suppressed status dumps
+
+opfunc_therm_ctrl() rate-limits _status_dump() to one call every 10 s.
+Each Wi-Fi/BT thermal query goes through it, and they come more often
+than that, so __ratelimit() reports the calls it held back the next time
+the window opens:
+
+  opfunc_therm_ctrl: 1 callbacks suppressed
+
+at KERN_WARNING, about six times a minute for the whole uptime. All it
+held back is _status_dump(), which only prints at pr_debug, so the
+summary is the one message in the path that does reach the log.
+
+conninfra_core_thermal_query(), the caller that sends
+CONNINFRA_OPID_THERM_CTRL, already sets RATELIMIT_MSG_ON_RELEASE on its
+own ratelimit for the same reason. Do the same here.
+
+Signed-off-by: Herman van Hazendonk <github.com@herrie.org>
+Upstream-Status: Inappropriate [MediaTek vendor driver, exists only in the vendor tree]
+---
+ .../misc/mediatek/connectivity/conninfra/core/conninfra_core.c   | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/misc/mediatek/connectivity/conninfra/core/conninfra_core.c b/drivers/misc/mediatek/connectivity/conninfra/core/conninfra_core.c
+index bee2bb03938a..feb7b757f6ed 100755
+--- a/drivers/misc/mediatek/connectivity/conninfra/core/conninfra_core.c
++++ b/drivers/misc/mediatek/connectivity/conninfra/core/conninfra_core.c
+@@ -803,6 +803,7 @@ static int opfunc_therm_ctrl(struct msg_op_data *op)
+ 
+ 	osal_unlock_sleepable_lock(&g_conninfra_ctx.core_lock);
+ 
++	ratelimit_set_flags(&_rs, RATELIMIT_MSG_ON_RELEASE);
+ 	if (__ratelimit(&_rs))
+ 		_status_dump();
+ 	conninfra_detect_time_change();
