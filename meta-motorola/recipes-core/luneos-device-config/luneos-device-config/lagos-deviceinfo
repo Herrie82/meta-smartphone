@@ -21,6 +21,28 @@ deviceinfo_display_dpi="260"
 # 1080 / 2.4). Expect to re-tune on the device.
 deviceinfo_device_pixel_ratio="1.6"
 
+# --- panel shape -----------------------------------------------------------
+# A camera hole at the top centre. The stock firmware defines it in two
+# Motorola overlays on /product/overlay, as config_mainBuiltInDisplayCutout
+# (pixels, x from the panel's centre):
+#
+#   LagosliteDisplayCutoutOverlay.apk  "M -24,0 L 24,0 L 24,70 L -24,70 Z"
+#                                      status_bar_height 40dp
+#   LagosDisplayCutoutOverlay.apk      "M -36,0 L 36,0 L 36,102 L -36,102 Z"
+#                                      status_bar_height 41dp
+#
+# Both are non-static, and something on Android picks one at boot. This phone
+# runs at ro.sf.lcd_density=280, so 1 dp = 1.75 px. Lagoslite's 40 dp status
+# bar is then exactly its 70 px cutout depth, and the product build's own
+# framework overlay (framework-res__lagos_sys__auto_generated_rro_product.apk)
+# sets 40 dp as well. Lagos's 41 dp is 72 px, short of its own 102 px cutout,
+# which only fits a density of about 400. So the lagoslite shape is the one
+# for this panel: x 360-24 = 336, 48 wide, 70 deep. UNVERIFIED ON HARDWARE:
+# check that the status bar clears the camera.
+#
+# Motorola's overlays set no rounded-corner radius, so none is declared here.
+deviceinfo_display_cutouts="336 0 48 70"
+
 # --- MediaTek vendor userspace --------------------------------------------
 # Carried over from the other MediaTek ports (MP01, Q25, radon), where each was
 # established. Recorded with what it is for, so a reader can tell whether it
