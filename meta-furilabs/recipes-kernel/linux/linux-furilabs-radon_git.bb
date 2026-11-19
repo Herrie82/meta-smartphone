@@ -289,11 +289,15 @@ S = "${UNPACKDIR}/${BP}"
 
 SRC_URI = "git://github.com/furilabs/linux-furiphone-radon.git;branch=forky;protocol=https \
            file://luneos.cfg \
+           file://0001-ALSA-pcm-treat-a-stop-threshold-of-UINT_MAX-as-never.patch \
 "
 
+# 0001 lets the 64-bit MediaTek audio HAL start the modem's PCM streams, without
+# which a call has no audio. Android runs that HAL as a 32-bit process and never
+# hits this.
+#
 # The fixes LuneOS carried here as patches 0001-0008 are merged in FuriLabs'
-# forky (pull requests #1-#8, 17 Nov 2026), so the pin below has them and no
-# patch is applied:
+# forky (pull requests #1-#8, 17 Nov 2026), so the pin below has them:
 #
 #   - three to kpd_customkey.c, the ODM driver behind the FLX1s privacy
 #     switches: a leaked wakeup source that kept the device awake after one
